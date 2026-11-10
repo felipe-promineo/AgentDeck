@@ -21,12 +21,64 @@
   else root.Pipeline = api;
 }(typeof self !== 'undefined' ? self : this, () => {
   // Which tools a sub-agent gets. "all": every tool of the governor.
+  // "edit": it can change files and run commands, but gets no connector
+  // (MCP) tools except the ones its type names (see CONNECTORS).
   const TOOL_SETS = {
     all: null,
     readonly: ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'TodoWrite'],
     readshell: ['Read', 'Grep', 'Glob', 'Bash', 'WebFetch', 'WebSearch', 'TodoWrite'],
+    edit: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'WebFetch', 'WebSearch', 'TodoWrite'],
   };
-  const TOOL_NAMES = { all: 'All tools', readonly: 'Read only', readshell: 'Read + shell' };
+  const TOOL_NAMES = { all: 'All tools (every connector too)', readonly: 'Read only', readshell: 'Read + shell', edit: 'Edit + shell' };
+
+  // The connectors (MCP servers) a type can be given on top of its tool set,
+  // by a short name. One connector has several names, depending on how it is
+  // registered: a claude.ai connector is claude_ai_<Name>, a local server the
+  // name in .mcp.json. Claude Code ignores names that are not there, so all
+  // of them are listed. A type's `mcp` entries are a connector ("unity": all
+  // of its tools), a connector and one tool ("tactile-pm:pm_get_task"), or a
+  // full tool name ("mcp__server__tool").
+  const CONNECTORS = {
+    'tactile-pm': { name: 'Tactile PM', servers: ['claude_ai_Tactile_PM', 'tactile-pm'] },
+    'tactile-cortex': { name: 'Tactile Cortex', servers: ['claude_ai_Tactile_Cortex', 'tactile-cortex'] },
+    // com.tactilegames.unity-mcp, as setupcheck.js writes it to .mcp.json.
+    unity: { name: 'Unity MCP', servers: ['unity'] },
+    // gameengine mcp, which every Game Engine project registers at its root.
+    gameengine: { name: 'Game Engine MCP', servers: ['gameengine', 'game-engine'] },
+  };
+  const MCP_ENTRY = /^(mcp__[\w.-]+|[\w.-]+(:[\w.-]+)?)$/;
+  const cleanList = (list, ok) => [...new Set((Array.isArray(list) ? list : String(list || '').split(/[\s,]+/)).map(x => String(x).trim()).filter(x => x && ok.test(x)))];
+  const SKILL_NAME = /^[\w:.-]+$/;
+
+  // A type's `mcp` entries as Claude Code tool names.
+  function mcpTools(type) {
+    const out = [];
+    for (const entry of type?.mcp || []) {
+      if (entry.startsWith('mcp__')) { out.push(entry); continue; }
+      const [server, tool] = entry.split(':');
+      const servers = CONNECTORS[server]?.servers || [server];
+      for (const s of servers) out.push(tool ? `mcp__${s}__${tool}` : `mcp__${s}`);
+    }
+    return [...new Set(out)];
+  }
+  // The connectors a type uses, by name, for its chips: { 'Tactile PM': 'all' | n tools }.
+  function connectorsOf(type) {
+    const out = {};
+    for (const entry of type?.mcp || []) {
+      const [server, tool] = entry.startsWith('mcp__') ? entry.slice(5).split('__') : entry.split(':');
+      const name = CONNECTORS[server]?.name || Object.values(CONNECTORS).find(c => c.servers.includes(server))?.name || server;
+      if (!tool) out[name] = 'all';
+      else if (out[name] !== 'all') out[name] = (out[name] || 0) + 1;
+    }
+    return out;
+  }
+
+  // Read-only tools of the Tactile connectors, for the agents that only
+  // look things up: the ticket with everything around it, and the wiki.
+  const PM_READ = ['pm_get_task', 'pm_list_comments', 'pm_list_task_attachments', 'pm_get_attachment_download_url', 'pm_read_task_media',
+    'pm_get_media_download_url', 'pm_list_task_documents', 'pm_get_task_document', 'pm_list_subtasks', 'pm_list_task_cortex_links',
+    'pm_search_tasks', 'pm_find_similar_tasks', 'pm_get_project', 'pm_list_statuses', 'pm_list_epics', 'pm_get_local_skill'].map(t => `tactile-pm:${t}`);
+  const CORTEX_READ = ['search_content', 'get_page', 'get_page_info', 'get_html_file'].map(t => `tactile-cortex:${t}`);
   const MODELS = [['inherit', 'Same as the agent'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']];
   // A sub-agent's effort ('' : the same as the agent's).
   const EFFORTS = [['', 'Same as the agent'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
@@ -128,14 +180,227 @@
         'Do nothing else until the user replies.',
       ].join(' '),
     },
+
+    // ----- Tactile: a Tactile PM ticket, in a Unity or a Game Engine game -----
+    // Each type gets only the tools its step needs: the analyst reads the
+    // ticket and the wiki but cannot change them; planners and reviewers
+    // read; implementers and testers edit, with their engine's MCP server.
+    {
+      id: 'pm-analyst',
+      group: 'Tactile',
+      effort: 'medium',
+      name: 'Tactile PM analyst',
+      description: 'Reads the Tactile PM ticket (comments, attachments, documents, linked tasks) and turns it into requirements and acceptance criteria.',
+      model: 'inherit',
+      tools: 'readonly',
+      mcp: [...PM_READ, ...CORTEX_READ],
+      skills: [],
+      prompt: [
+        'You are the requirements analyst of a multi-agent pipeline that works Tactile PM tickets. Do not change any file, and never write to Tactile PM: you only read.',
+        'When the task names a ticket (a key like ABC-123, or a Tactile PM link), read it with pm_get_task (load the tool with ToolSearch first when it is not loaded),',
+        'then everything around it: its comments (pm_list_comments; a newer comment wins over the description), images in the description (pm_read_task_media),',
+        'attachments (pm_list_task_attachments), its documents (pm_list_task_documents, then refinement.md, the agreed spec, and technical.md with pm_get_task_document),',
+        'linked tasks (pm_get_task on each; a done one\'s implementation.md is the precedent), subtasks, and similar tasks when the ticket is thin.',
+        'The description is HTML. Read Tactile Cortex pages the ticket links to, and search Cortex for the feature when the code base does not explain it.',
+        'Then read the code the ticket touches, and say whether the project is a Unity game (Assets and ProjectSettings folders, C#) or a Game Engine game (TypeScript, PROJECT.md, gameengine).',
+        'Answer with: 1) the ticket (key, title, type, status) and the goal in one or two sentences; 2) what, where, who, the trigger and the expected behaviour;',
+        '3) the requirements as a numbered list, each one testable; 4) acceptance criteria, quoted from the ticket or refinement.md where it has them;',
+        '5) out of scope; 6) assumptions and open questions, marking the ones that block the work (the governor asks the user those);',
+        '7) the files, types, systems, prefabs or scenes involved, with paths. Be concrete and short: the next agents only see what you write.',
+      ].join(' '),
+    },
+    {
+      id: 'unity-planner',
+      group: 'Unity',
+      effort: 'high',
+      name: 'Unity planner',
+      description: 'Plans the change in a Unity (C#) game, following Tactile\'s C# conventions.',
+      model: 'inherit',
+      tools: 'readonly',
+      mcp: [...CORTEX_READ],
+      skills: [],
+      prompt: [
+        'You are the planner of a multi-agent pipeline in a Unity game at Tactile. From the task and the requirements you are given, write an implementation plan. Do not change any file.',
+        'Read the project\'s CLAUDE.md / AGENTS.md and the coding standards they point to (for example coding-standards.md), and the code around the change: its assemblies (.asmdef), features, prefabs and scenes.',
+        'Follow Tactile\'s Game C# Conventions (Tactile Cortex page 6aa8caaa46b2cbe5be98eaa8; read it with get_page when you need a rule) and C# Testing (6aa8caaa46b2cbe5be98eaa5): EditMode tests with NSubstitute.',
+        'Answer with: the approach and why; the changes file by file (path, what changes, new types or methods, which assembly); changes to prefabs, scenes or ScriptableObjects, and whether they need the Unity Editor;',
+        'the EditMode tests to add (fixture, cases) and which existing tests cover the area; the order of the work; and the risks (shared code that must compile on Unity N and N-1, save data, serialization).',
+        'When the work can be split between several implementers, split it into parts that touch different files and say which part is which.',
+      ].join(' '),
+    },
+    {
+      id: 'unity-implementer',
+      group: 'Unity',
+      effort: '',
+      name: 'Unity implementer',
+      description: 'Makes the planned C# and asset changes in the Unity project, and recompiles through the Unity MCP.',
+      model: 'inherit',
+      tools: 'edit',
+      mcp: ['unity'],
+      skills: ['unity-pipeline'],
+      prompt: [
+        'You are an implementer in a multi-agent pipeline in a Unity game at Tactile. Make the changes the plan gives you, and only those:',
+        'when you are given one part of the plan, stay inside that part and its files, because other implementers work on the other parts at the same time.',
+        'Follow the project\'s CLAUDE.md / AGENTS.md, its coding standards and Tactile\'s Game C# Conventions, and match the code around you. Edit C# files with your file tools.',
+        'Prefabs, scenes and ScriptableObjects: change them through the Unity MCP when the Editor is running, not by hand-editing YAML, unless the change is trivial and safe.',
+        'After your changes, recompile through the Unity MCP (wait until the Editor is ready) and fix every compile error and new warning. When the Editor is not reachable, say so; do not close the user\'s Editor.',
+        'Answer with what you changed (files and what each change does), how you checked it compiles, and anything you could not do or that differs from the plan.',
+      ].join(' '),
+    },
+    {
+      id: 'unity-tester',
+      group: 'Unity',
+      verdict: true,
+      effort: 'medium',
+      name: 'Unity tester',
+      description: 'Writes and runs the Unity EditMode tests (Unity MCP or the unity CLI) and reports what fails.',
+      model: 'inherit',
+      tools: 'edit',
+      mcp: ['unity'],
+      skills: ['unity-cli', 'unity-pipeline'],
+      prompt: [
+        'You are the tester of a multi-agent pipeline in a Unity game at Tactile. Check that the change does what the requirements say.',
+        'Tactile\'s standard is EditMode tests with NSubstitute (Cortex page "C# Testing", 6aa8caaa46b2cbe5be98eaa5); use PlayMode only for behaviour that needs frames, physics or a running scene.',
+        'Add tests for the new behaviour in the project\'s test assemblies, next to the existing tests of that area and in their style. Change only test code: do not fix the code under test; report instead.',
+        'Run them: when the project is open in the user\'s Editor, through the Unity MCP (recompile, wait until it is ready, then run the tests, filtered to the area first, then the whole EditMode suite);',
+        'otherwise with the unity CLI (unity test <project> --mode EditMode). Never close the user\'s Editor, and never re-run a suite on code that has not changed.',
+        'Answer with the tests you added, what you ran (mode, filter, counts), what passed, what failed (with the output) and what you could not test.',
+      ].join(' '),
+    },
+    {
+      id: 'unity-reviewer',
+      group: 'Unity',
+      verdict: true,
+      effort: 'high',
+      name: 'Unity code reviewer',
+      description: 'Reviews the C# changes against the ticket and Tactile\'s client code review guidelines.',
+      model: 'inherit',
+      tools: 'readshell',
+      mcp: [...CORTEX_READ],
+      skills: [],
+      prompt: [
+        'You are the code reviewer of a multi-agent pipeline in a Unity game at Tactile. Review the changes (svn diff or git diff, and the files) against the task, the requirements and the plan. Do not change any file.',
+        'Review by Tactile\'s guidelines: read them from Tactile Cortex with get_page: Client code review guidelines (6a3a46ca77c60ded819e20ec), Game C# Conventions (6aa8caaa46b2cbe5be98eaa8) and C# Testing (6aa8caaa46b2cbe5be98eaa5),',
+        'plus the project\'s own CLAUDE.md / AGENTS.md and coding standards, which win where they are stricter.',
+        'Look for bugs, missing requirements, broken edge cases, code that breaks the conventions (for example runtime LINQ, coroutines or reflection where the project bans them, public fields instead of [SerializeField] private, null instead of the Null Object pattern),',
+        'shared code that would not compile on the previous supported Unity version, missing or weak EditMode tests, reinvented shared code, and needless complexity.',
+        'Start your answer with exactly one line: "VERDICT: APPROVE" when nothing must change, or "VERDICT: CHANGES" when something must.',
+        'Then list each problem with its file and line, the guideline or requirement it breaks, why it matters, and what to do. Mark each one as blocking or minor.',
+      ].join(' '),
+    },
+    {
+      id: 'ge-planner',
+      group: 'Game Engine',
+      effort: 'high',
+      name: 'Game Engine planner',
+      description: 'Plans the change in a Game Engine (TypeScript ECS) game, following the project\'s skills and the engine\'s design.',
+      model: 'inherit',
+      tools: 'readonly',
+      mcp: [...CORTEX_READ],
+      skills: [],
+      prompt: [
+        'You are the planner of a multi-agent pipeline in a game built on Tactile\'s Game Engine (gameplay in TypeScript on a Rust ECS). From the task and the requirements you are given, write an implementation plan. Do not change any file.',
+        'Read the project\'s PROJECT.md first, then AGENTS.md / CLAUDE.md and the project skills they point to for the area you plan in (.claude/skills), and the code around the change:',
+        'its feature folders (src/<feature>/ with schema/<feature>.schema.ts, index.ts as the facade, <feature>.di.ts), systems (defineSystem), components, resources and events.',
+        'For engine behaviour the project does not explain, search Tactile Cortex (the Game Engine technical design document is page 6adb2af1df50edf4ea7d8618, and the ADRs are in the game-engine collection).',
+        'Keep simulation code deterministic (fixed step, the engine\'s seeded randomness, no wall-clock time) and presentation-only code out of the simulation.',
+        'Answer with: the approach and why; the changes file by file (path, what changes, new systems, components, resources, events or schema changes and the code generation they need);',
+        'the tests to add (worldTest, renderTest or replays) and the gameengine commands that check the change; the order of the work; and the risks.',
+        'When the work can be split between several implementers, split it into parts that touch different files and say which part is which.',
+      ].join(' '),
+    },
+    {
+      id: 'ge-implementer',
+      group: 'Game Engine',
+      effort: '',
+      name: 'Game Engine implementer',
+      description: 'Makes the planned TypeScript changes in the Game Engine game and checks them with the gameengine MCP.',
+      model: 'inherit',
+      tools: 'edit',
+      mcp: ['gameengine'],
+      skills: [],
+      prompt: [
+        'You are an implementer in a multi-agent pipeline in a game built on Tactile\'s Game Engine. Make the changes the plan gives you, and only those:',
+        'when you are given one part of the plan, stay inside that part and its files, because other implementers work on the other parts at the same time.',
+        'Follow the project\'s PROJECT.md, AGENTS.md / CLAUDE.md and the project skills for the area you change, and match the code around you.',
+        'Change schemas in schema/*.schema.ts and regenerate (gen); never edit *.gen.ts files by hand. Keep simulation code deterministic.',
+        'Check your work with the gameengine MCP tools (or the gameengine CLI): validate, the type check and lint the project documents, and the tests of the area you changed. Fix what fails.',
+        'Answer with what you changed (files and what each change does), what you ran to check it and the results, and anything you could not do or that differs from the plan.',
+      ].join(' '),
+    },
+    {
+      id: 'ge-tester',
+      group: 'Game Engine',
+      verdict: true,
+      effort: 'medium',
+      name: 'Game Engine tester',
+      description: 'Writes and runs the game\'s tests with the gameengine MCP (gameengine test), and reports what fails.',
+      model: 'inherit',
+      tools: 'edit',
+      mcp: ['gameengine'],
+      skills: ['testing', 'mcp-tools'],
+      prompt: [
+        'You are the tester of a multi-agent pipeline in a game built on Tactile\'s Game Engine. Check that the change does what the requirements say.',
+        'Follow the project\'s testing skill and AGENTS.md. Add tests for the new behaviour with the engine\'s test framework (worldTest for simulation, renderTest for what the player sees), next to the existing tests of that area and in their style.',
+        'Change only test code and goldens the change really alters: do not fix the code under test; report instead.',
+        'Run them with the gameengine MCP test tool (or gameengine test): the changed area first, then the suite the project documents as its gate, on every JS engine it requires (state hashes must match on V8 and Hermes).',
+        'Where a state hash cannot show the behaviour, use a session, a screenshot or a replay. Never re-run a suite on code that has not changed.',
+        'Answer with the tests you added, what you ran (command, scope, counts), what passed, what failed (with the output) and what you could not test.',
+      ].join(' '),
+    },
+    {
+      id: 'ge-reviewer',
+      group: 'Game Engine',
+      verdict: true,
+      effort: 'high',
+      name: 'Game Engine code reviewer',
+      description: 'Reviews the TypeScript changes against the ticket, the project\'s rules and Tactile\'s code review guidelines.',
+      model: 'inherit',
+      tools: 'readshell',
+      mcp: [...CORTEX_READ],
+      skills: [],
+      prompt: [
+        'You are the code reviewer of a multi-agent pipeline in a game built on Tactile\'s Game Engine. Review the changes (git diff, and the files) against the task, the requirements and the plan. Do not change any file.',
+        'Review by the project\'s PROJECT.md, AGENTS.md / CLAUDE.md and its skills for the area, and by Tactile\'s guidelines, read from Tactile Cortex with get_page:',
+        'Code Review Tips: Must-Haves & Enhancements (6a3a46d077c60ded819e2298) and Backend code review guidelines (6a3a46d077c60ded819e22a1) for TypeScript; the project\'s rules win where they are stricter.',
+        'Formatting and types are checked by the tools, so do not comment on them. Look for bugs, missing requirements, broken edge cases, non-deterministic simulation code (wall-clock time, unseeded randomness, presentation services inside a system),',
+        'hand-edited generated files, features reaching into each other instead of through their index.ts, SOLID and DRY problems, any, missing or weak tests, and needless complexity.',
+        'Start your answer with exactly one line: "VERDICT: APPROVE" when nothing must change, or "VERDICT: CHANGES" when something must.',
+        'Then list each problem with its file and line, the guideline or requirement it breaks, why it matters, and what to do. Mark each one as blocking or minor.',
+      ].join(' '),
+    },
   ];
+
+  // A row of steps from Your task to Done; `back` sends each verdict step's
+  // ✕ connection to an earlier step (index → index).
+  function chain(types, back) {
+    const nodes = types.map((type, i) => ({ id: `n${i + 1}`, type, count: 1, x: 200 + i * 230, y: 110, rounds: 3, note: '' }));
+    const ids = ['task', ...nodes.map(n => n.id), 'done'];
+    const edges = ids.slice(1).map((id, i) => ({ from: ids[i], to: id }));
+    for (const [from, to] of Object.entries(back)) edges.push({ from: nodes[from].id, to: nodes[to].id, kind: 'fail' });
+    return { nodes, edges };
+  }
+
+  // Ready-made graphs (the editor's "Start from" menu). The Tactile ones read
+  // a Tactile PM ticket, plan, implement, test and review in one engine; the
+  // tester and the reviewer send the work back to the implementer.
+  const TEMPLATES = [
+    { id: 'default', name: 'General', graph: () => defaults() },
+    { id: 'unity', name: 'Tactile PM ticket → Unity', graph: () => chain(['pm-analyst', 'unity-planner', 'unity-implementer', 'unity-tester', 'unity-reviewer'], { 3: 2, 4: 2 }) },
+    { id: 'gameengine', name: 'Tactile PM ticket → Game Engine', graph: () => chain(['pm-analyst', 'ge-planner', 'ge-implementer', 'ge-tester', 'ge-reviewer'], { 3: 2, 4: 2 }) },
+  ];
+  function template(id) {
+    const t = TEMPLATES.find(x => x.id === id) || TEMPLATES[0];
+    const { nodes, edges } = t.graph();
+    return { nodes, edges };
+  }
 
   // The graph the app starts with: understand → plan → implement → review,
   // and the reviewer sends the work back to the implementer when it is not right.
   function defaults() {
     return {
       enabled: false,
-      types: BUILTIN_TYPES.map(t => ({ kind: 'agent', verdict: false, ...t, builtin: true })),
+      types: BUILTIN_TYPES.map(t => ({ kind: 'agent', verdict: false, mcp: [], skills: [], ...t, builtin: true })),
       nodes: [
         { id: 'n1', type: 'analyst', count: 1, x: 200, y: 110, rounds: 3, note: '' },
         { id: 'n2', type: 'planner', count: 1, x: 430, y: 110, rounds: 3, note: '' },
@@ -173,6 +438,10 @@
         id: slug(t.id), name: String(t.name || t.id), description: String(t.description || ''), prompt: String(t.prompt || ''),
         model: MODELS.some(([v]) => v === t.model) ? t.model : 'inherit', tools: t.tools in TOOL_SETS ? t.tools : 'all',
         effort: EFFORTS.some(([v]) => v === t.effort) ? t.effort : '',
+        // Connector tools and skills: a built-in type saved before it had them gets its own.
+        mcp: cleanList(t.mcp ?? builtin?.mcp, MCP_ENTRY),
+        skills: cleanList(t.skills ?? builtin?.skills, SKILL_NAME),
+        ...(builtin?.group ? { group: builtin.group } : {}),
         kind,
         // Whether it can send the work back (a "not right" output).
         verdict: kind === 'ask' || (builtin ? !!builtin.verdict : !!t.verdict),
@@ -266,6 +535,7 @@
       const t = typeOf(n.type);
       if (!t) continue;
       if (n.count > 1 && t.kind !== 'ask' && t.tools === 'all') out.push({ level: 'info', node: n.id, text: `${n.count} ${t.name} agents run at the same time and can change files: the governor gives each its own part of the work.` });
+      if (t.kind !== 'ask' && t.tools === 'all' && t.mcp.length) out.push({ level: 'info', node: n.id, text: `${t.name} has every tool, so it already gets every connector: its connector list adds nothing. Pick a smaller tool set to give it only those.` });
       if (t.verdict) {
         const back = failOf(n.id);
         if (!back.length && t.kind !== 'ask') out.push({ level: 'info', node: n.id, text: `${label(n)} has no ✕ "not right" connection: when it finds problems, the governor fixes them itself.` });
@@ -339,7 +609,12 @@
         description: `${t.description || t.name} Part of the multi-agent pipeline: run by the governor only, when the pipeline says so.`,
         prompt,
       };
-      if (TOOL_SETS[t.tools]) def.tools = TOOL_SETS[t.tools];
+      // A tool set plus the type's connector tools, and ToolSearch, which
+      // loads connector tools when Claude Code defers them. With every tool
+      // it already has every connector.
+      const mcp = mcpTools(t);
+      if (TOOL_SETS[t.tools]) def.tools = [...TOOL_SETS[t.tools], ...(mcp.length ? ['ToolSearch', ...mcp] : [])];
+      if (t.skills.length) def.skills = t.skills;
       if (t.model && t.model !== 'inherit') def.model = t.model;
       if (t.effort) def.effort = t.effort;
       out[subagentName(t)] = def;
@@ -434,7 +709,9 @@
   // toolSets: { readonly, readshell, all } }. Without it the numbers are
   // rough defaults. Sub-agents cannot be measured on their own: theirs is
   // their instructions + their tools + the instruction files.
-  const FALLBACK_TOOLS = { all: 20000, readonly: 3500, readshell: 6000 };
+  const FALLBACK_TOOLS = { all: 20000, readonly: 3500, readshell: 6000, edit: 9000 };
+  const FALLBACK_MCP_TOOL = 300;
+  const FALLBACK_MCP_SERVER = 4000;
   const FALLBACK_GOVERNOR = 30000;
   const SUBAGENT_ENV = 500;       // the environment block Claude Code adds to a sub-agent's prompt
   const tokensOf = text => Math.ceil(String(text || '').length / 3.7);
@@ -449,7 +726,10 @@
     for (const t of c.types) {
       // Asking the user is a turn of the governor's own: no new agent.
       if (t.kind === 'ask') { perType[t.id] = { instructions: 0, tools: 0, memory: 0, total: 0 }; continue; }
-      const parts = { instructions: SUBAGENT_ENV + tokensOf(t.prompt), tools: tools(t.tools), memory };
+      // Connector tools are not measured: a rough size each (a whole
+      // connector more), unless Claude Code defers them.
+      const extra = t.tools === 'all' ? 0 : t.mcp.reduce((sum, e) => sum + (e.includes(':') || e.split('__').length > 2 ? FALLBACK_MCP_TOOL : FALLBACK_MCP_SERVER), 0);
+      const parts = { instructions: SUBAGENT_ENV + tokensOf(t.prompt), tools: tools(t.tools) + extra, memory };
       perType[t.id] = { ...parts, total: parts.instructions + parts.tools + parts.memory };
     }
     const base = id => perType[id]?.total || 0;
@@ -487,5 +767,8 @@
 
   const formatTokens = n => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 1e4 ? 0 : 1)}k` : String(Math.round(n)));
 
-  return { TASK, DONE, TOOL_SETS, TOOL_NAMES, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
+  const cleanMcp = list => cleanList(list, MCP_ENTRY);
+  const cleanSkills = list => cleanList(list, SKILL_NAME);
+
+  return { TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
 }));

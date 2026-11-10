@@ -174,7 +174,33 @@ The editor:
 - **Warnings** under the graph, and a ! on the card concerned: a card with no input, an output that goes nowhere, a card that is not reached from Your task or does not lead to Done, nothing connected to Done, a circle of connections (going round again is what the ✕ connections are for), a ✕ connection that goes forward instead of back to a step before it, or a missing agent type. Click a warning to show its card. You can save with warnings, and the governor works around them.
 - **What matters about each card** shows on it as chips, only where it differs from the governor: what it may do when that is less than every tool (blue 👁 *Read only*, violet ⌘ *Read + shell*), its own model or effort (amber when high), ⚖ when it gives a verdict, ✋ for Ask the user, how many run at once, and how many tokens each of its requests starts with. A card with none of these runs like the governor: every tool, the same model and effort. The stripe down its left side shows what it may do (orange: every tool), and the table under Tokens per request lists everything.
 - **Tokens per request**, under the graph: how big a request is before any work, the baseline every request carries. **Measure** starts Claude Code in the folder you pick (your last folder at first), exactly as the governor would start, and reads what it loads, without sending a message, so it costs nothing: the system prompt with Agent Hub's and the pipeline's instructions, the tools, skills, MCP tools, and the instruction files it found (CLAUDE.md, CLAUDE.local.md, `.claude/rules`, and AGENTS.md in a project without a CLAUDE.md, in the folder, the folders above it and your global ones), each with its size. Sub-agents are worked out from that: their instructions, their tool set (each one measured) and the same instruction files. The tiles add it up: the governor's request, the largest sub-agent's, every agent's first request the first time through, and when every ✕ connection sends the work back as often as it may. It measures once by itself the first time the panel shows; before that the numbers are rough defaults (marked ≈).
-- **Agent types**: the app comes with a Requirements analyst, a Planner, an Implementer, a Tester, a Code reviewer and Ask the user. Each has a description, a model (the same as the agent's, or Opus, Sonnet or Haiku), an effort (the agent's, or low to max: the Planner and the Code reviewer think hard by default), its tools (all, read only, or read + shell) and its instructions. You can change the built-in ones (*Restore its instructions* puts them back) and add your own with **+ New agent type**. **Reset to the default pipeline** puts back the graph and the types.
+- **Agent types**: the app comes with a Requirements analyst, a Planner, an Implementer, a Tester, a Code reviewer and Ask the user, plus the Tactile ones below (grouped as Tactile, Unity and Game Engine in the menus). Each has a description, a model (the same as the agent's, or Opus, Sonnet or Haiku), an effort (the agent's, or low to max: the Planner and the Code reviewer think hard by default), its tools (all, read only, read + shell, or edit + shell), its connectors and skills, and its instructions. You can change the built-in ones (*Restore its instructions* puts them back) and add your own with **+ New agent type**. **Reset to the default pipeline** puts back the graph and the types.
+
+### Tactile PM tickets in Unity and Game Engine games
+
+**Start from…**, next to **+ Agent…**, replaces the cards with a ready-made pipeline (your agent types stay): *General* (the default one), *Tactile PM ticket → Unity* and *Tactile PM ticket → Game Engine*. Both Tactile ones are Tactile PM analyst → planner → implementer → tester → code reviewer, and the tester and the reviewer send the work back to the implementer. Give the governor the ticket key (for example `ABC-123`) or its link as the task.
+
+Each step gets only the tools it needs:
+
+| Agent type | Tools | Connectors (MCP) | Skills |
+|---|---|---|---|
+| Tactile PM analyst | Read only | Tactile PM: only the tools that read a ticket (the ticket, comments, attachments, media, documents, linked and similar tasks, statuses); Tactile Cortex: search and read pages | |
+| Unity planner / Game Engine planner | Read only | Tactile Cortex (read) | |
+| Unity implementer | Edit + shell | Unity MCP (`unity`) | unity-pipeline |
+| Unity tester | Edit + shell | Unity MCP | unity-cli, unity-pipeline |
+| Game Engine implementer | Edit + shell | Game Engine MCP (`gameengine`) | |
+| Game Engine tester | Edit + shell | Game Engine MCP | testing, mcp-tools |
+| Unity code reviewer / Game Engine code reviewer | Read + shell | Tactile Cortex (read) | |
+
+The analyst never writes to Tactile PM: it reads the ticket with everything around it (a newer comment wins over the description, `refinement.md` is the agreed spec, a done linked task's `implementation.md` is the precedent) and answers with requirements, acceptance criteria, open questions and the code involved. The planners and implementers follow the project's own CLAUDE.md / AGENTS.md (and PROJECT.md and its skills in a Game Engine game). The testers write tests in the project's style without changing the code under test: EditMode tests with NSubstitute in Unity, through the Unity MCP when the project is open in the Editor (never closing it) or the `unity` CLI otherwise; `gameengine test` through the Game Engine MCP, on V8 and Hermes. The reviewers review by Tactile's guidelines, read from Tactile Cortex: *Client code review guidelines*, *Game C# Conventions* and *C# Testing* for Unity; *Code Review Tips: Must-Haves & Enhancements* and *Backend code review guidelines* for TypeScript, with the project's own rules first.
+
+Every agent type has these fields in the editor:
+
+- **Tools**: *Edit + shell* can change files and run commands with no connector except its own. *All tools* has everything the governor has, every connector included.
+- **Connectors**: the MCP tools it may use on top of its tool set, one per line. A line is a connector (`tactile-pm`, `tactile-cortex`, `unity`, `gameengine`: all of its tools), a connector and one tool (`tactile-pm:pm_get_task`), or a full name (`mcp__server__tool`). The Tactile connectors are listed under both names they can have (`claude_ai_Tactile_PM` from claude.ai, `tactile-pm` as a local server). Claude Code ignores names that are not there.
+- **Skills**: loaded into the agent when it starts, when the project or your setup has a skill of that name.
+
+Cards show each connector as a 🔌 chip and the skills as a 📘 chip.
 
 The setting is `multiAgent` in config.json: `{ enabled, types, nodes, edges }`; an edge with `"kind": "fail"` is a ✕ connection. (A setting from the first version, with a reviewer box, becomes a reviewer card before Done.)
 

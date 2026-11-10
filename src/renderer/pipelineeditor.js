@@ -32,7 +32,13 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   add.className = 'pipe-add';
   const reset = el('button', 'settings-btn', 'Reset to the default pipeline');
   reset.type = 'button';
-  bar.append(add, reset, el('div', 'settings-hint pipe-help',
+  // Start from a ready-made graph (pipeline.js TEMPLATES): its cards and
+  // connections replace the canvas; the agent types stay as they are.
+  const start = document.createElement('select');
+  start.className = 'pipe-start';
+  start.title = 'Replace the cards with a ready-made pipeline. Your agent types stay as they are';
+  start.append(new Option('Start from…', ''), ...window.Pipeline.TEMPLATES.map(t => new Option(t.name, t.id)));
+  bar.append(add, start, reset, el('div', 'settings-hint pipe-help',
     'Drag a card by its title to move it. Drag from the dot on its right side to another card to connect them; click a line to remove it.'));
 
   // ---------- canvas ----------
@@ -73,6 +79,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   const ACCESS = {
     readonly: ['👁 Read only', 'read', 'It can read the code but not change anything'],
     readshell: ['⌘ Read + shell', 'shell', 'It can read and run commands, but has no tools to edit files'],
+    edit: ['✎ Edit + shell', 'write', 'It can change files and run commands, with no connectors except the ones listed for it'],
     all: ['✎ Edits files', 'write', 'It has every tool: it can change files and run commands'],
   };
   const modelName = v => (v === 'inherit' ? 'Agent\'s model' : P.MODELS.find(([m]) => m === v)?.[1] || v);
@@ -90,6 +97,12 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       return row;
     }
     if (t.tools !== 'all') chip(...ACCESS[t.tools]);
+    if (t.tools !== 'all') {
+      for (const [name, which] of Object.entries(P.connectorsOf(t))) {
+        chip(`🔌 ${name}`, 'mcp', which === 'all' ? `It can use every tool of ${name}` : `It can use ${which} tool${which === 1 ? '' : 's'} of ${name}: ${t.mcp.filter(e => e.includes(':')).map(e => e.split(':')[1]).join(', ')}`);
+      }
+    }
+    if (t.skills?.length) chip(`📘 ${t.skills.length === 1 ? t.skills[0] : `${t.skills.length} skills`}`, 'skill', `Starts with these skills loaded: ${t.skills.join(', ')} (when the project or your setup has them)`);
     if (t.verdict) chip('⚖ Verdict', 'verdict', 'It says whether the work is right: when it is not, the work goes back along its ✕ connection');
     if (t.model !== 'inherit') chip(modelName(t.model), 'model', `Always runs on ${modelName(t.model)}, whatever the pipeline agent runs on`);
     if (t.effort) chip(`${P.EFFORTS.find(([e]) => e === t.effort)?.[1]} effort`, `effort effort-${t.effort}`, 'Thinks this hard, whatever the pipeline agent\'s effort is');
@@ -127,12 +140,24 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     };
   };
 
+  // The agent types as options, the built-in Tactile ones grouped (Tactile,
+  // Unity, Game Engine) after the general ones and yours.
+  const fillTypes = select => {
+    const groups = new Map();
+    for (const t of cfg.types) {
+      if (!t.group) { select.appendChild(new Option(t.name, t.id)); continue; }
+      if (!groups.has(t.group)) groups.set(t.group, Object.assign(document.createElement('optgroup'), { label: t.group }));
+      groups.get(t.group).appendChild(new Option(t.name, t.id));
+    }
+    select.append(...groups.values());
+  };
+
   // ---------- cards ----------
   const cards = new Map();   // node id (and task, done) → element
 
   const typeSelect = (value, onChange) => {
     const select = document.createElement('select');
-    for (const t of cfg.types) select.appendChild(new Option(t.name, t.id));
+    fillTypes(select);
     if (!typeOf(value)) select.appendChild(new Option(`Missing: ${value || 'none'}`, value || ''));
     select.value = value;
     select.onchange = () => onChange(select.value);
@@ -535,7 +560,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   // ---------- adding cards ----------
   const fillAdd = () => {
     add.replaceChildren(new Option('+ Agent…', ''));
-    for (const t of cfg.types) add.appendChild(new Option(t.name, t.id));
+    fillTypes(add);
     add.value = '';
   };
   add.onchange = () => {
@@ -549,6 +574,15 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     window.uiSound?.('tick');
     render();
     requestAnimationFrame(() => cards.get(id)?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' }));
+  };
+  start.onchange = () => {
+    const id = start.value;
+    start.value = '';
+    if (!id) return;
+    cfg = { ...cfg, ...P.template(id) };
+    window.uiSound?.('tick');
+    render();
+    renderTypes();
   };
   reset.onclick = () => {
     const enabled = cfg.enabled;
@@ -584,6 +618,14 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       effort.onchange = () => { t.effort = effort.value; renderTypes(t.id); render(); };
       const tools = settingsSelect(Object.entries(P.TOOL_NAMES), t.tools);
       tools.onchange = () => { t.tools = tools.value; renderTypes(t.id); render(); };
+      // Connectors (MCP) on top of the tool set, and skills it starts with.
+      const listText = list => (list || []).join(', ');
+      const mcp = settingsText((t.mcp || []).join('\n'), `One per line: a connector (${Object.keys(P.CONNECTORS).join(', ')}), a connector and one of its tools (tactile-pm:pm_get_task), or a full tool name (mcp__server__tool)`);
+      mcp.rows = Math.min(8, Math.max(2, (t.mcp || []).length + 1));
+      mcp.disabled = t.tools === 'all';
+      mcp.onchange = () => { t.mcp = P.cleanMcp(mcp.value); renderTypes(t.id); render(); };
+      const skills = settingsInput('text', listText(t.skills), { placeholder: 'Skill names, separated by commas' });
+      skills.onchange = () => { t.skills = P.cleanSkills(skills.value); renderTypes(t.id); render(); };
       // Your own types: a sub-agent or a stop to ask you, and whether it
       // gives a verdict (a ✕ "not right" output on its cards).
       const kind = settingsSelect([['agent', 'A sub-agent'], ['ask', 'Ask the user (the governor stops)']], t.kind || 'agent');
@@ -630,7 +672,11 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
         ...(ask ? [] : [
           settingsField('Model', 'Same as the agent: the model the pipeline agent runs on', model),
           settingsField('Effort', 'How hard it thinks. Higher: better on hard steps (planning, review), slower and more tokens', effort),
-          settingsField('Tools', 'Read only: it can look but not change files. Read + shell: it can run commands too', tools),
+          settingsField('Tools', 'Read only: it can look but not change files. Read + shell: it can run commands too. Edit + shell: it can change files, with only the connectors below. All tools: everything the pipeline agent has, every connector included', tools),
+          settingsField('Connectors', t.tools === 'all'
+            ? 'It has every tool, so it gets every connector. Pick another tool set to give it only some'
+            : 'The MCP tools it may use on top of its tool set; nothing else. Names a connector does not have are ignored', mcp),
+          settingsField('Skills', 'Loaded into it when it starts, if the project or your setup has a skill of that name (for example unity-cli, testing)', skills),
           ...(t.builtin ? [] : [settingsField('Gives a verdict', 'Its cards get a ✕ "not right" output that sends the work back to an earlier step. Its answer starts with VERDICT: APPROVE or VERDICT: CHANGES', verdict)]),
         ]),
         settingsField(ask ? 'What it shows and asks' : 'Instructions', null, prompt),
@@ -641,7 +687,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     create.type = 'button';
     create.onclick = () => {
       const id = newId('custom-', new Set(cfg.types.map(t => t.id)));
-      cfg.types.push({ id, name: 'New agent', description: '', prompt: '', model: 'inherit', tools: 'all', effort: '', kind: 'agent', verdict: false, builtin: false });
+      cfg.types.push({ id, name: 'New agent', description: '', prompt: '', model: 'inherit', tools: 'all', mcp: [], skills: [], effort: '', kind: 'agent', verdict: false, builtin: false });
       window.uiSound?.('tick');
       renderTypes(id);
       render();
