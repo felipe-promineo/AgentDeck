@@ -65,9 +65,11 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   const fmt = P.formatTokens;
   let estimateNow = P.estimate(cfg, pipeMeasured);
 
-  // What matters most about an agent, as chips: what it may do (read only,
-  // shell, or change files), its model and effort, how many run at once,
-  // and how big each of its requests starts.
+  // What matters most about an agent, as chips: only where it differs from
+  // the governor (fewer tools than all, its own model, its own effort),
+  // plus whether it gives a verdict, how many run at once and how big each
+  // of its requests starts. The same as the governor shows nothing; the
+  // table under Tokens per request lists everything.
   const ACCESS = {
     readonly: ['👁 Read only', 'read', 'It can read the code but not change anything'],
     readshell: ['⌘ Read + shell', 'shell', 'It can read and run commands, but has no tools to edit files'],
@@ -85,14 +87,12 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     };
     if (t.kind === 'ask') {
       chip('✋ Waits for you', 'ask', 'The governor stops here, shows you where things stand and asks you; the pipeline goes on when you answer');
-      chip('No extra agent', 'dim', 'The governor asks you itself, so it costs no sub-agent');
       return row;
     }
-    const [text, kind, title] = ACCESS[t.tools] || ACCESS.all;
-    chip(text, kind, title);
+    if (t.tools !== 'all') chip(...ACCESS[t.tools]);
     if (t.verdict) chip('⚖ Verdict', 'verdict', 'It says whether the work is right: when it is not, the work goes back along its ✕ connection');
-    chip(modelName(t.model), t.model === 'inherit' ? 'dim' : 'model', t.model === 'inherit' ? 'The model the pipeline agent runs on' : `Always runs on ${modelName(t.model)}`);
-    chip(t.effort ? `${P.EFFORTS.find(([e]) => e === t.effort)?.[1]} effort` : 'Agent\'s effort', t.effort ? `effort effort-${t.effort}` : 'dim', 'How hard it thinks');
+    if (t.model !== 'inherit') chip(modelName(t.model), 'model', `Always runs on ${modelName(t.model)}, whatever the pipeline agent runs on`);
+    if (t.effort) chip(`${P.EFFORTS.find(([e]) => e === t.effort)?.[1]} effort`, `effort effort-${t.effort}`, 'Thinks this hard, whatever the pipeline agent\'s effort is');
     if (count > 1) chip(`×${count} at once`, 'count', `${count} agents run this step at the same time`);
     const tokens = estimateNow.perType[t.id]?.total;
     if (tokens) chip(`${estimateNow.measured ? '' : '≈'}${fmt(tokens)} / request`, 'tokens', 'The context each of its requests starts with: its instructions, its tools and the instruction files (see Tokens per request below)').dataset.type = t.id;
