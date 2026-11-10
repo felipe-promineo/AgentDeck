@@ -85,13 +85,22 @@
 
   // The agents the app comes with. Their prompts can be changed in Settings;
   // they cannot be deleted (Reset puts them back as they are here).
+  //
+  // Model and effort are set per role instead of "Same as the agent": the
+  // governor often runs on Auto, which picks Haiku or a low effort for a
+  // short message, and every inheriting step would get that too. Steps that
+  // decide (planners, reviewers) run on Opus at high effort, implementers on
+  // Opus at medium (they follow a plan), and the analysts and testers, which
+  // mostly read and run things, on Sonnet at medium. Ask the user, Use a skill
+  // and Custom prompt stay with the agent's: the first is the governor itself,
+  // the other two do whatever their card says.
   const BUILTIN_TYPES = [
     {
       id: 'analyst',
       effort: 'medium',
       name: 'Requirements analyst',
       description: 'Turns the task into clear requirements, acceptance criteria and open questions.',
-      model: 'inherit',
+      model: 'sonnet',
       tools: 'readonly',
       prompt: [
         'You are the requirements analyst of a multi-agent pipeline. Read the task and the parts of the code base it touches.',
@@ -107,7 +116,7 @@
       effort: 'high',
       name: 'Planner',
       description: 'Writes a step-by-step implementation plan from the requirements.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'readonly',
       prompt: [
         'You are the planner of a multi-agent pipeline. From the task and the requirements you are given, write an implementation plan.',
@@ -119,10 +128,10 @@
     },
     {
       id: 'implementer',
-      effort: '',
+      effort: 'medium',
       name: 'Implementer',
       description: 'Makes the code changes the plan describes.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'all',
       prompt: [
         'You are an implementer in a multi-agent pipeline. Make the changes the plan gives you, and only those:',
@@ -137,7 +146,7 @@
       effort: 'medium',
       name: 'Tester',
       description: 'Writes and runs tests for the change, and reports what fails.',
-      model: 'inherit',
+      model: 'sonnet',
       tools: 'all',
       prompt: [
         'You are the tester of a multi-agent pipeline. Check that the change does what the requirements say:',
@@ -151,7 +160,7 @@
       effort: 'high',
       name: 'Code reviewer',
       description: 'Reviews the result against the requirements and the plan, and lists what must change.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'readshell',
       prompt: [
         'You are the reviewer of a multi-agent pipeline. Review the changes (git diff or svn diff, and the files) against the task, the requirements and the plan.',
@@ -221,7 +230,7 @@
       effort: 'medium',
       name: 'Tactile PM analyst',
       description: 'Reads the Tactile PM ticket (comments, attachments, documents, linked tasks) and turns it into requirements and acceptance criteria.',
-      model: 'inherit',
+      model: 'sonnet',
       tools: 'readonly',
       mcp: [...PM_READ, ...CORTEX_READ],
       skills: [],
@@ -245,7 +254,7 @@
       effort: 'high',
       name: 'Unity planner',
       description: 'Plans the change in a Unity (C#) game, following Tactile\'s C# conventions.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'readonly',
       mcp: [...CORTEX_READ],
       skills: [],
@@ -261,10 +270,10 @@
     {
       id: 'unity-implementer',
       group: 'Unity',
-      effort: '',
+      effort: 'medium',
       name: 'Unity implementer',
       description: 'Makes the planned C# and asset changes in the Unity project, and recompiles through the Unity MCP.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'edit',
       mcp: ['unity'],
       skills: ['unity-pipeline'],
@@ -284,7 +293,7 @@
       effort: 'medium',
       name: 'Unity tester',
       description: 'Writes and runs the Unity EditMode tests (Unity MCP or the unity CLI) and reports what fails.',
-      model: 'inherit',
+      model: 'sonnet',
       tools: 'edit',
       mcp: ['unity'],
       skills: ['unity-cli', 'unity-pipeline'],
@@ -304,7 +313,7 @@
       effort: 'high',
       name: 'Unity code reviewer',
       description: 'Reviews the C# changes against the ticket and Tactile\'s client code review guidelines.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'readshell',
       mcp: [...CORTEX_READ],
       skills: [],
@@ -324,7 +333,7 @@
       effort: 'high',
       name: 'Game Engine planner',
       description: 'Plans the change in a Game Engine (TypeScript ECS) game, following the project\'s skills and the engine\'s design.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'readonly',
       mcp: [...CORTEX_READ],
       skills: [],
@@ -342,10 +351,10 @@
     {
       id: 'ge-implementer',
       group: 'Game Engine',
-      effort: '',
+      effort: 'medium',
       name: 'Game Engine implementer',
       description: 'Makes the planned TypeScript changes in the Game Engine game and checks them with the gameengine MCP.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'edit',
       mcp: ['gameengine'],
       skills: [],
@@ -365,7 +374,7 @@
       effort: 'medium',
       name: 'Game Engine tester',
       description: 'Writes and runs the game\'s tests with the gameengine MCP (gameengine test), and reports what fails.',
-      model: 'inherit',
+      model: 'sonnet',
       tools: 'edit',
       mcp: ['gameengine'],
       skills: ['testing', 'mcp-tools'],
@@ -385,7 +394,7 @@
       effort: 'high',
       name: 'Game Engine code reviewer',
       description: 'Reviews the TypeScript changes against the ticket, the project\'s rules and Tactile\'s code review guidelines.',
-      model: 'inherit',
+      model: 'opus',
       tools: 'readshell',
       mcp: [...CORTEX_READ],
       skills: [],
