@@ -95,6 +95,45 @@ function compactTokens(value) {
   return n >= 100000 && n <= 1000000 ? n : false;
 }
 
+// Claude Code's arguments for an agent (also used to measure a pipeline's
+// baseline, see measureBaseline, so both see the same context).
+function claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, pipeline: asPipeline } = {}) {
+  // A pipeline agent (the Pipeline button under the message box) is the
+  // governor: it gets the pipeline's sub-agents and its instructions. Only
+  // while the pipeline is on in Settings; otherwise it is a normal agent.
+  const governed = !!asPipeline && config.multiAgent?.enabled;
+  const args = [
+    '-p',
+    '--input-format', 'stream-json',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--include-partial-messages',
+    '--permission-mode', permissionMode || config.defaultPermissionMode,
+    // Send permission questions to us over stdout instead of refusing them.
+    '--permission-prompt-tool', 'stdio',
+    // Without this flag the CLI refuses a later switch to bypass mode.
+    '--allow-dangerously-skip-permissions',
+    '--append-system-prompt', governed ? `${SYSTEM_PROMPT}\n\n${pipeline.governorPrompt(config.multiAgent)}` : SYSTEM_PROMPT,
+  ];
+  if (governed) args.push('--agents', JSON.stringify(pipeline.subagents(config.multiAgent)));
+  // "auto" is the app's own (automodel.js picks a real model before this);
+  // if one ever slips through, Claude Code uses its default.
+  if (model && model !== 'default' && model !== 'auto') args.push('--model', model);
+  if (effort) args.push('--effort', effort);
+  if (fastMode) args.push('--settings', JSON.stringify({ fastMode: true }));
+  // Compact the conversation at this size (see autoCompact in main.js). A
+  // value the CLI would refuse is left out, so the agent still starts.
+  const compact = String(config.autoCompact || '').trim().toLowerCase();
+  if (compactTokens(compact) !== false) args.push('--autocompact', compact);
+  if (resumeId) args.push('--resume', resumeId);
+  // A fork starts a new session that begins with a copy of resumeId's conversation.
+  if (resumeId && forkSession) args.push('--fork-session');
+  // Going back to one of your messages: the session up to the answer before it.
+  if (resumeId && typeof resumeSessionAt === 'string' && /^[\w-]{8,64}$/.test(resumeSessionAt)) args.push('--resume-session-at', resumeSessionAt);
+  args.push(...(config.extraArgs || []));
+  return args;
+}
+
 class AgentManager {
   constructor({ send, getConfig }) {
     this.send = send;          // send(channel, ...args) to the window
@@ -107,39 +146,7 @@ class AgentManager {
   start({ id: wantedId, cwd, resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, title, pipeline: asPipeline }) {
     const config = this.getConfig();
     const id = typeof wantedId === 'string' && /^[\w-]{8,64}$/.test(wantedId) && !this.agents.has(wantedId) ? wantedId : randomUUID();
-    // A pipeline agent (the Pipeline button under the message box) is the
-    // governor: it gets the pipeline's sub-agents and its instructions. Only
-    // while the pipeline is on in Settings; otherwise it is a normal agent.
-    const governed = !!asPipeline && config.multiAgent?.enabled;
-    const args = [
-      '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--include-partial-messages',
-      '--permission-mode', permissionMode || config.defaultPermissionMode,
-      // Send permission questions to us over stdout instead of refusing them.
-      '--permission-prompt-tool', 'stdio',
-      // Without this flag the CLI refuses a later switch to bypass mode.
-      '--allow-dangerously-skip-permissions',
-      '--append-system-prompt', governed ? `${SYSTEM_PROMPT}\n\n${pipeline.governorPrompt(config.multiAgent)}` : SYSTEM_PROMPT,
-    ];
-    if (governed) args.push('--agents', JSON.stringify(pipeline.subagents(config.multiAgent)));
-    // "auto" is the app's own (automodel.js picks a real model before this);
-    // if one ever slips through, Claude Code uses its default.
-    if (model && model !== 'default' && model !== 'auto') args.push('--model', model);
-    if (effort) args.push('--effort', effort);
-    if (fastMode) args.push('--settings', JSON.stringify({ fastMode: true }));
-    // Compact the conversation at this size (see autoCompact in main.js). A
-    // value the CLI would refuse is left out, so the agent still starts.
-    const compact = String(config.autoCompact || '').trim().toLowerCase();
-    if (compactTokens(compact) !== false) args.push('--autocompact', compact);
-    if (resumeId) args.push('--resume', resumeId);
-    // A fork starts a new session that begins with a copy of resumeId's conversation.
-    if (resumeId && forkSession) args.push('--fork-session');
-    // Going back to one of your messages: the session up to the answer before it.
-    if (resumeId && typeof resumeSessionAt === 'string' && /^[\w-]{8,64}$/.test(resumeSessionAt)) args.push('--resume-session-at', resumeSessionAt);
-    args.push(...(config.extraArgs || []));
+    const args = claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, pipeline: asPipeline });
 
     const proc = spawnClaude(config.claudePath, args, {
       cwd,
@@ -682,4 +689,83 @@ function pickGame(config, question, { task = null } = {}) {
   });
 }
 
-module.exports = { AgentManager, fetchModels, findClaude, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited, compactTokens, SYSTEM_PROMPT, EDIT_PROMPT };
+// ---------- a pipeline's baseline (Settings → Multi-agent) ----------
+
+// What Claude Code would put in a request before any work, in a folder:
+// it starts with these arguments, answers "initialize" and then
+// "get_context_usage" (the numbers of /context). No message is sent, so it
+// costs nothing. Resolves with the usage, or null.
+function contextProbe(config, args, cwd) {
+  return new Promise(resolve => {
+    const proc = spawnClaude(config.claudePath, [...args, '--no-session-persistence'],
+      { cwd, env: childEnv(config.env), stdio: ['pipe', 'pipe', 'ignore'] });
+    helperProcesses.add(proc);
+    let buffer = '';
+    let done = false;
+    const finish = value => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      helperProcesses.delete(proc);
+      killTree(proc);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), 30000);
+    proc.on('error', () => finish(null));
+    proc.on('exit', () => finish(null));
+    const write = obj => { try { proc.stdin.write(JSON.stringify(obj) + '\n'); } catch { finish(null); } };
+    proc.stdout.on('data', chunk => {
+      buffer += chunk.toString('utf8');
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (!line.includes('"control_response"')) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        const id = msg.response?.request_id;
+        if (id === 'init') write({ type: 'control_request', request_id: 'usage', request: { subtype: 'get_context_usage' } });
+        if (id === 'usage') finish(msg.response.subtype === 'success' ? msg.response.response : null);
+      }
+    });
+    write({ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } });
+  });
+}
+
+// The governor of `multiAgent` (the editor's pipeline, saved or not) in
+// `cwd`, measured as it would start, and the tools of each sub-agent tool
+// set. Resolves with { governor: { total, model, categories, memoryFiles,
+// mcpTools }, toolSets: { all, readonly, readshell } } or { error }.
+async function measurePipeline(config, multiAgent, cwd) {
+  if (config.claudeEnabled === false) return { error: 'Claude is off in Settings → Providers.' };
+  if (!cwd || !require('fs').existsSync(cwd)) return { error: 'Pick a folder that exists.' };
+  const governed = { ...config, multiAgent: { ...pipeline.normalize(multiAgent), enabled: true } };
+  const model = config.defaultModel && config.defaultModel !== 'auto' ? config.defaultModel : undefined;
+  const sets = Object.entries(pipeline.TOOL_SETS).filter(([, tools]) => tools);
+  const [usage, ...subsets] = await Promise.all([
+    contextProbe(governed, claudeArgs(governed, { pipeline: true, model }), cwd),
+    // Only the tool definitions count here: no MCP servers, no prompt of ours.
+    ...sets.map(([, tools]) => contextProbe(config, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--tools', tools.join(',')], cwd)),
+  ]);
+  if (!usage) return { error: 'Claude Code did not answer. Is it installed and signed in?' };
+  const category = (u, id) => u?.categories?.find(c => c.id === id)?.tokens || 0;
+  const toolSets = { all: category(usage, 'system_tools') };
+  sets.forEach(([name], i) => { if (subsets[i]) toolSets[name] = category(subsets[i], 'system_tools'); });
+  return {
+    governor: {
+      total: usage.totalTokens || 0,
+      model: usage.model || '',
+      categories: (usage.categories || []).filter(c => c.kind === 'used').map(c => ({ id: c.id, name: c.name, tokens: c.tokens })),
+      deferred: category(usage, 'system_tools_deferred'),
+      memoryFiles: (usage.memoryFiles || []).map(f => ({ path: f.path, type: f.type, tokens: f.tokens })),
+      mcpTools: (usage.mcpTools || []).map(t => ({ name: t.name || t.toolName || '', server: t.serverName || t.server || '', tokens: t.tokens || 0 })),
+      // MCP tools a sub-agent with every tool gets too.
+      mcp: category(usage, 'mcp_tools') || (usage.mcpTools || []).reduce((sum, t) => sum + (t.tokens || 0), 0),
+    },
+    toolSets,
+    folder: cwd,
+    at: Date.now(),
+  };
+}
+
+module.exports = { AgentManager, measurePipeline, fetchModels, findClaude, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited, compactTokens, SYSTEM_PROMPT, EDIT_PROMPT };

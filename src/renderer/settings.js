@@ -303,7 +303,13 @@ function openSettings(config, { onSaved } = {}) {
   // Multi-agent: the main switch, and the pipeline's graph and agent types
   // (pipelineeditor.js). Off: no Pipeline button, and every agent is a normal one.
   const multiOn = settingsInput('checkbox', !!config.multiAgent?.enabled);
-  const pipeline = pipelineEditor(config.multiAgent);
+  // Its token estimate measures in the folder you work in (lastFolder and
+  // recentFolders are app.js's).
+  const pipeline = pipelineEditor(config.multiAgent, {
+    folder: typeof lastFolder === 'function' ? lastFolder() : config.defaultFolder,
+    folders: typeof recentFolders === 'function' ? recentFolders() : [],
+    home: config.home || '',
+  });
   const showMulti = () => {
     pipeline.element.classList.toggle('off', !multiOn.checked);
     pipeline.element.title = multiOn.checked ? '' : 'Turn on the multi-agent pipeline to use it';

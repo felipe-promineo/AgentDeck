@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Menu, protocol
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
-const { AgentManager, fetchModels, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited } = require('./agents');
+const { AgentManager, measurePipeline, fetchModels, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited } = require('./agents');
 const { CodexManager, fetchCodexModels, fetchCodexUsage, listCodexThreads, loadCodexThread } = require('./codex');
 const { listSessions, loadTranscript, PROJECTS_DIR } = require('./sessions');
 const git = require('./git');
@@ -547,6 +547,8 @@ app.whenReady().then(() => {
     return r.canceled ? null : r.filePaths[0];
   });
   ipcMain.handle('agent:start', (_e, opts) => agents.start(opts));
+  // Settings → Multi-agent: how big the pipeline's requests start (agents.js).
+  ipcMain.handle('pipeline:measure', (_e, multiAgent, folder) => measurePipeline(getConfig(), multiAgent, folder));
   ipcMain.handle('agent:send', (_e, id, text, images) => agents.sendMessage(id, text, images));
   ipcMain.handle('agent:setModel', (_e, id, choice) => agents.setModel(id, choice));
   let models = null;

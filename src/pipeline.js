@@ -26,12 +26,15 @@
   };
   const TOOL_NAMES = { all: 'All tools', readonly: 'Read only', readshell: 'Read + shell' };
   const MODELS = [['inherit', 'Same as the agent'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']];
+  // A sub-agent's effort ('' : the same as the agent's).
+  const EFFORTS = [['', 'Same as the agent'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
 
   // The agents the app comes with. Their prompts can be changed in Settings;
   // they cannot be deleted (Reset puts them back as they are here).
   const BUILTIN_TYPES = [
     {
       id: 'analyst',
+      effort: 'medium',
       name: 'Requirements analyst',
       description: 'Turns the task into clear requirements, acceptance criteria and open questions.',
       model: 'inherit',
@@ -47,6 +50,7 @@
     },
     {
       id: 'planner',
+      effort: 'high',
       name: 'Planner',
       description: 'Writes a step-by-step implementation plan from the requirements.',
       model: 'inherit',
@@ -61,6 +65,7 @@
     },
     {
       id: 'implementer',
+      effort: '',
       name: 'Implementer',
       description: 'Makes the code changes the plan describes.',
       model: 'inherit',
@@ -74,6 +79,7 @@
     },
     {
       id: 'tester',
+      effort: 'medium',
       name: 'Tester',
       description: 'Writes and runs tests for the change, and reports what fails.',
       model: 'inherit',
@@ -86,6 +92,7 @@
     },
     {
       id: 'reviewer',
+      effort: 'high',
       name: 'Code reviewer',
       description: 'Reviews the result against the requirements and the plan, and lists what must change.',
       model: 'inherit',
@@ -135,6 +142,7 @@
     const types = Array.isArray(s.types) ? s.types.filter(t => t && t.id).map(t => ({
       id: slug(t.id), name: String(t.name || t.id), description: String(t.description || ''), prompt: String(t.prompt || ''),
       model: MODELS.some(([v]) => v === t.model) ? t.model : 'inherit', tools: t.tools in TOOL_SETS ? t.tools : 'all',
+      effort: EFFORTS.some(([v]) => v === t.effort) ? t.effort : '',
       builtin: BUILTIN_TYPES.some(b => b.id === t.id),
     })) : d.types;
     for (const b of d.types) if (!types.some(t => t.id === b.id)) types.push(b);
@@ -263,6 +271,7 @@
       };
       if (TOOL_SETS[t.tools]) def.tools = TOOL_SETS[t.tools];
       if (t.model && t.model !== 'inherit') def.model = t.model;
+      if (t.effort) def.effort = t.effort;
       out[subagentName(t)] = def;
     }
     return out;
@@ -329,5 +338,57 @@
     return (steps || 'no steps') + loop;
   }
 
-  return { TASK, DONE, TOOL_SETS, TOOL_NAMES, MODELS, BUILTIN_TYPES, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug };
+  // ---------- how big each request starts ----------
+  //
+  // Every request an agent makes re-sends its whole context: the system
+  // prompt, the tool definitions, the instruction files (CLAUDE.md,
+  // AGENTS.md, rules) and the conversation so far. The baseline is that
+  // context before any work: what the first request carries, and the
+  // smallest any later request can be.
+  //
+  // measured (from Agent Hub's main process, see measureBaseline in
+  // agents.js) is what Claude Code itself reports for the governor in the
+  // chosen folder: { governor: { total, categories, memoryFiles, mcpTools },
+  // toolSets: { readonly, readshell, all } }. Without it the numbers are
+  // rough defaults. Sub-agents cannot be measured on their own: theirs is
+  // their instructions + their tools + the instruction files.
+  const FALLBACK_TOOLS = { all: 20000, readonly: 3500, readshell: 6000 };
+  const FALLBACK_GOVERNOR = 30000;
+  const SUBAGENT_ENV = 500;       // the environment block Claude Code adds to a sub-agent's prompt
+  const tokensOf = text => Math.ceil(String(text || '').length / 3.7);
+
+  function estimate(cfg, measured = null) {
+    const c = normalize(cfg);
+    const m = measured && !measured.error ? measured : null;
+    const memory = m ? (m.governor.memoryFiles || []).reduce((sum, f) => sum + (f.tokens || 0), 0) : 0;
+    const mcp = m ? m.governor.mcp || 0 : 0;
+    const tools = set => (m?.toolSets?.[set] != null ? m.toolSets[set] + (set === 'all' ? mcp : 0) : FALLBACK_TOOLS[set]);
+    const perType = {};
+    for (const t of c.types) {
+      const parts = { instructions: SUBAGENT_ENV + tokensOf(t.prompt), tools: tools(t.tools), memory };
+      perType[t.id] = { ...parts, total: parts.instructions + parts.tools + parts.memory };
+    }
+    const base = id => perType[id]?.total || 0;
+    const governor = m ? m.governor.total : FALLBACK_GOVERNOR;
+    const steps = c.nodes.reduce((sum, n) => sum + n.count * base(n.type), 0);
+    const reviewers = c.loop.enabled ? c.loop.count * base(c.loop.reviewer) : 0;
+    // Another round runs the step it goes back to, everything after it, and the reviewers.
+    const after = new Set();
+    const stack = c.loop.backTo ? [c.loop.backTo] : [];
+    while (stack.length) {
+      const id = stack.pop();
+      if (after.has(id) || id === DONE) continue;
+      after.add(id);
+      for (const e of c.edges) if (e.from === id) stack.push(e.to);
+    }
+    const again = c.nodes.filter(n => after.has(n.id)).reduce((sum, n) => sum + n.count * base(n.type), 0) + reviewers;
+    const oneRound = governor + steps + reviewers;
+    const rounds = c.loop.enabled ? c.loop.maxRounds : 1;
+    const agents = c.nodes.reduce((sum, n) => sum + n.count, 0) + (c.loop.enabled ? c.loop.count : 0);
+    return { measured: !!m, governor, memory, mcp, perType, steps, reviewers, oneRound, worst: oneRound + (rounds - 1) * again, rounds, agents };
+  }
+
+  const formatTokens = n => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 1e4 ? 0 : 1)}k` : String(Math.round(n)));
+
+  return { TASK, DONE, TOOL_SETS, TOOL_NAMES, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug };
 }));

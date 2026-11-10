@@ -15,7 +15,11 @@ const PIPE_NODE_W = 196;
 const PIPE_PORT_Y = 21;          // the ports sit at the middle of a card's title bar
 const PIPE_TERM_W = 112;
 
-function pipelineEditor(saved) {
+// The last measurement (see the estimate panel), kept while the app runs so
+// reopening Settings does not measure again.
+let pipeMeasured = null;
+
+function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   const P = window.Pipeline;
   let cfg = P.normalize(saved);
   const root = el('div', 'pipe-editor');
@@ -38,15 +42,50 @@ function pipelineEditor(saved) {
   scroller.appendChild(surface);
   const problems = el('div', 'pipe-problems');
 
+  // ---------- tokens per request ----------
+  const estimateBox = el('div', 'pipe-estimate');
+
   // ---------- agent types ----------
   const typesBox = el('div', 'pipe-types');
 
-  root.append(bar, scroller, problems, el('div', 'settings-section-title pipe-types-title', 'Agent types'),
+  root.append(bar, scroller, problems, estimateBox, el('div', 'settings-section-title pipe-types-title', 'Agent types'),
     el('div', 'settings-hint', 'The agents the cards use. Each one is a Claude Code sub-agent with its own instructions, model and tools; the governor gives it its part of the task.'),
     typesBox);
 
   const typeOf = id => cfg.types.find(t => t.id === id);
   const nodeOf = id => cfg.nodes.find(n => n.id === id);
+  const fmt = P.formatTokens;
+  let estimateNow = P.estimate(cfg, pipeMeasured);
+
+  // What matters most about an agent, as chips: what it may do (read only,
+  // shell, or change files), its model and effort, how many run at once,
+  // and how big each of its requests starts.
+  const ACCESS = {
+    readonly: ['👁 Read only', 'read', 'It can read the code but not change anything'],
+    readshell: ['⌘ Read + shell', 'shell', 'It can read and run commands, but has no tools to edit files'],
+    all: ['✎ Edits files', 'write', 'It has every tool: it can change files and run commands'],
+  };
+  const modelName = v => (v === 'inherit' ? 'Agent\'s model' : P.MODELS.find(([m]) => m === v)?.[1] || v);
+  const chips = (t, count) => {
+    const row = el('div', 'pipe-chips');
+    if (!t) return row;
+    const chip = (text, kind, title) => {
+      const c = el('span', `pipe-chip ${kind}`, text);
+      if (title) c.title = title;
+      row.appendChild(c);
+      return c;
+    };
+    const [text, kind, title] = ACCESS[t.tools] || ACCESS.all;
+    chip(text, kind, title);
+    chip(modelName(t.model), t.model === 'inherit' ? 'dim' : 'model', t.model === 'inherit' ? 'The model the pipeline agent runs on' : `Always runs on ${modelName(t.model)}`);
+    chip(t.effort ? `${P.EFFORTS.find(([e]) => e === t.effort)?.[1]} effort` : 'Agent\'s effort', t.effort ? `effort effort-${t.effort}` : 'dim', 'How hard it thinks');
+    if (count > 1) chip(`×${count} at once`, 'count', `${count} agents run this step at the same time`);
+    const tokens = estimateNow.perType[t.id]?.total;
+    if (tokens) chip(`${estimateNow.measured ? '' : '≈'}${fmt(tokens)} / request`, 'tokens', 'The context each of its requests starts with: its instructions, its tools and the instruction files (see Tokens per request below)').dataset.type = t.id;
+    return row;
+  };
+  const accessClass = t => `access-${(ACCESS[t?.tools] || ACCESS.all)[1]}`;
+
   const newId = (prefix, taken) => { let i = 1; while (taken.has(`${prefix}${i}`)) i++; return `${prefix}${i}`; };
 
   // Where things are on the surface. The reviewer box wraps the agents; Done
@@ -113,11 +152,13 @@ function pipelineEditor(saved) {
       render();
     };
     head.append(title, remove);
+    card.classList.add(accessClass(typeOf(n.type)));
     const body = el('div', 'pipe-node-body');
+    body.appendChild(chips(typeOf(n.type), n.count));
     const row = el('div', 'pipe-node-row');
     row.append(typeSelect(n.type, v => { n.type = v; render(); }),
       el('span', 'pipe-times', '×'),
-      countInput(n.count, v => { n.count = v; check(); }, 'How many agents run this step at the same time'));
+      countInput(n.count, v => { n.count = v; render(); }, 'How many agents run this step at the same time'));
     const note = settingsInput('text', n.note, { placeholder: 'Note for this step (optional)' });
     note.className = 'pipe-note';
     note.oninput = () => { n.note = note.value; };
@@ -155,12 +196,17 @@ function pipelineEditor(saved) {
     back.onchange = () => { cfg.loop.backTo = back.value; drawLines(); check(); };
     const bits = [
       el('span', 'pipe-loop-label', '↻ Reviewer'),
-      typeSelect(cfg.loop.reviewer, v => { cfg.loop.reviewer = v; check(); }),
+      typeSelect(cfg.loop.reviewer, v => { cfg.loop.reviewer = v; render(); }),
       el('span', 'pipe-times', '×'),
-      countInput(cfg.loop.count, v => { cfg.loop.count = v; }, 'How many reviewers look at the result at the same time'),
+      countInput(cfg.loop.count, v => { cfg.loop.count = v; render(); }, 'How many reviewers look at the result at the same time'),
       el('span', 'pipe-loop-text', 'up to'), rounds, el('span', 'pipe-loop-text', 'rounds, back to'), back,
     ];
     head.append(on, ...bits);
+    if (cfg.loop.enabled) {
+      const reviewerChips = chips(typeOf(cfg.loop.reviewer), cfg.loop.count);
+      reviewerChips.classList.add('pipe-loop-chips');
+      head.appendChild(reviewerChips);
+    }
     for (const c of head.querySelectorAll('select, input:not([type="checkbox"])')) c.disabled = !cfg.loop.enabled;
     box.classList.toggle('off', !cfg.loop.enabled);
     box.appendChild(head);
@@ -316,6 +362,7 @@ function pipelineEditor(saved) {
 
   // ---------- problems ----------
   const check = () => {
+    renderEstimate();
     const found = P.validate(cfg);
     for (const [id, card] of cards) {
       const mine = found.filter(p => p.node === id);
@@ -405,7 +452,8 @@ function pipelineEditor(saved) {
       const sum = document.createElement('summary');
       const used = cfg.nodes.filter(n => n.type === t.id).length + (cfg.loop.enabled && cfg.loop.reviewer === t.id ? 1 : 0);
       sum.append(el('span', 'pipe-type-name', t.name),
-        el('span', 'pipe-type-meta', [P.MODELS.find(([v]) => v === t.model)?.[1], P.TOOL_NAMES[t.tools], t.builtin ? 'built in' : 'yours', used ? `used ${used}×` : 'not used'].filter(Boolean).join(' · ')),
+        chips(t, 1),
+        el('span', 'pipe-type-meta', [t.builtin ? 'built in' : 'yours', used ? `used ${used}×` : 'not used'].join(' · ')),
         el('span', 'pipe-type-desc', t.description));
       item.appendChild(sum);
 
@@ -415,12 +463,14 @@ function pipelineEditor(saved) {
       const desc = settingsInput('text', t.description, { placeholder: 'What it does, in one sentence' });
       desc.oninput = () => { t.description = desc.value; sum.querySelector('.pipe-type-desc').textContent = t.description; };
       const model = settingsSelect(P.MODELS, t.model);
-      model.onchange = () => { t.model = model.value; renderTypes(t.id); };
+      model.onchange = () => { t.model = model.value; renderTypes(t.id); render(); };
+      const effort = settingsSelect(P.EFFORTS, t.effort || '');
+      effort.onchange = () => { t.effort = effort.value; renderTypes(t.id); render(); };
       const tools = settingsSelect(Object.entries(P.TOOL_NAMES), t.tools);
-      tools.onchange = () => { t.tools = tools.value; renderTypes(t.id); check(); };
+      tools.onchange = () => { t.tools = tools.value; renderTypes(t.id); render(); };
       const prompt = settingsText(t.prompt, 'Its instructions: what it does, what it must not do, and what its answer contains');
       prompt.rows = 6;
-      prompt.oninput = () => { t.prompt = prompt.value; };
+      prompt.oninput = () => { t.prompt = prompt.value; renderEstimate(); };
 
       const actions = el('div', 'pipe-type-actions');
       if (t.builtin) {
@@ -449,6 +499,7 @@ function pipelineEditor(saved) {
         settingsField('Name', null, name),
         settingsField('Description', 'The governor reads this to know what the agent is for', desc),
         settingsField('Model', 'Same as the agent: the model the pipeline agent runs on', model),
+        settingsField('Effort', 'How hard it thinks. Higher: better on hard steps (planning, review), slower and more tokens', effort),
         settingsField('Tools', 'Read only: it can look but not change files. Read + shell: it can run commands too', tools),
         settingsField('Instructions', null, prompt),
         actions);
@@ -466,6 +517,161 @@ function pipelineEditor(saved) {
     };
     typesBox.appendChild(create);
   };
+
+  // ---------- the estimate panel ----------
+  // Measured: Claude Code, started as the governor would be in the folder,
+  // reports its context (agents.js measurePipeline). The instruction files
+  // it found (CLAUDE.md, AGENTS.md, rules, the global ones) are what every
+  // agent of the pipeline reads, sub-agents too.
+  const shortFolder = f => (home && f && (f === home || f.startsWith(home + '/') || f.startsWith(home + '\\')) ? '~' + f.slice(home.length) : f);
+  const folderSelect = document.createElement('select');
+  folderSelect.className = 'pipe-folder';
+  let measureFolder = pipeMeasured?.folder || folder || folders[0] || '';
+  const fillFolders = () => {
+    folderSelect.replaceChildren();
+    for (const f of [...new Set([measureFolder, ...folders].filter(Boolean))]) folderSelect.appendChild(new Option(`📁 ${shortFolder(f)}`, f));
+    folderSelect.appendChild(new Option('Choose folder…', '__choose'));
+    folderSelect.value = measureFolder || '__choose';
+  };
+  fillFolders();
+  const measureBtn = el('button', 'settings-btn', 'Measure');
+  measureBtn.type = 'button';
+  let measuring = false;
+  let measureNote = '';
+  const measure = async () => {
+    if (measuring || !window.deck?.measurePipeline) return;
+    if (!measureFolder) { measureNote = 'Pick the folder your agents work in.'; renderEstimate(); return; }
+    measuring = true;
+    measureNote = '';
+    renderEstimate();
+    const result = await window.deck.measurePipeline(P.normalize(cfg), measureFolder).catch(err => ({ error: String(err?.message || err) }));
+    measuring = false;
+    if (result?.error) measureNote = result.error;
+    else { pipeMeasured = { ...result, prompt: P.governorPrompt(cfg) }; }
+    render();
+  };
+  measureBtn.onclick = measure;
+  folderSelect.onchange = async () => {
+    if (folderSelect.value === '__choose') {
+      const chosen = await window.deck?.pickFolder?.();
+      if (chosen) measureFolder = chosen;
+      fillFolders();
+      if (!chosen) return;
+    } else measureFolder = folderSelect.value;
+    measure();
+  };
+
+  const CATEGORY_NAMES = { system_prompt: 'System prompt + pipeline instructions', system_tools: 'Tools', memory_files: 'Instruction files', skills: 'Skills', custom_agents: 'Pipeline agents list', mcp_tools: 'MCP tools', messages: 'Message', slash_commands: 'Commands' };
+  const stat = (label, value, hint, kind = '') => {
+    const tile = el('div', `pipe-stat ${kind}`);
+    tile.append(el('div', 'pipe-stat-value', value), el('div', 'pipe-stat-label', label));
+    if (hint) tile.title = hint;
+    return tile;
+  };
+  const renderEstimate = () => {
+    estimateNow = P.estimate(cfg, pipeMeasured);
+    for (const c of root.querySelectorAll('.pipe-chip.tokens')) {
+      const total = estimateNow.perType[c.dataset.type]?.total;
+      if (total) c.textContent = `${estimateNow.measured ? '' : '≈'}${fmt(total)} / request`;
+    }
+    const e = estimateNow;
+    const m = pipeMeasured;
+    estimateBox.replaceChildren();
+    const head = el('div', 'pipe-estimate-head');
+    head.append(el('div', 'settings-section-title', 'Tokens per request'), folderSelect, measureBtn);
+    measureBtn.disabled = measuring;
+    measureBtn.textContent = measuring ? 'Measuring…' : m ? 'Measure again' : 'Measure';
+    const status = el('div', 'settings-hint pipe-estimate-status');
+    if (measuring) status.textContent = 'Starting Claude Code in the folder to read what it loads (no message is sent, so it costs nothing)…';
+    else if (measureNote) { status.textContent = measureNote; status.classList.add('danger-text'); }
+    else if (m) {
+      const changed = m.prompt !== P.governorPrompt(cfg);
+      status.textContent = `Measured in ${shortFolder(m.folder)} at ${new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${m.governor.model ? `, on ${m.governor.model}` : ''}.`
+        + (changed ? ' The graph changed since: the governor\'s number is from before, Measure again for the exact one.' : '');
+    } else status.textContent = 'Rough defaults. Measure reads what Claude Code loads in the folder: CLAUDE.md, AGENTS.md, rules, skills and MCP tools.';
+    head.appendChild(status);
+    estimateBox.appendChild(head);
+
+    const sub = Object.entries(e.perType).filter(([id]) => cfg.nodes.some(n => n.type === id) || (cfg.loop.enabled && cfg.loop.reviewer === id));
+    const biggest = sub.reduce((max, [, v]) => Math.max(max, v.total), 0);
+    const tiles = el('div', 'pipe-stats');
+    const approx = e.measured ? '' : '≈';
+    tiles.append(
+      stat('Governor, each request', approx + fmt(e.governor), 'The context the governor sends with every request before any work: Claude Code\'s and Agent Hub\'s instructions, the pipeline\'s, its tools and the instruction files', 'main'),
+      stat('Largest sub-agent, each request', approx + fmt(biggest), 'Its instructions, its tools and the instruction files; the inputs the governor gives it come on top'),
+      stat(`Whole run, 1 round (${e.agents + 1} agents)`, approx + fmt(e.oneRound), 'Every agent\'s first request added up: the governor, each step × its count, and the reviewers'),
+      stat(`Whole run, ${e.rounds} rounds`, approx + fmt(e.worst), 'When the reviewer sends it back every time: the steps from the one it goes back to, and the reviewers, run again', e.rounds > 1 ? 'warn' : ''));
+    estimateBox.appendChild(tiles);
+
+    // The governor's context, by part, as a bar.
+    if (m) {
+      const parts = m.governor.categories.filter(c => c.tokens > 0 && c.id !== 'messages');
+      const sum = parts.reduce((s2, c) => s2 + c.tokens, 0) || 1;
+      const barEl = el('div', 'pipe-bar');
+      const legend = el('div', 'pipe-legend');
+      parts.forEach((c, i) => {
+        const seg = el('div', `pipe-seg seg-${i % 6}`);
+        seg.style.width = `${(c.tokens / sum) * 100}%`;
+        seg.title = `${CATEGORY_NAMES[c.id] || c.name}: ${fmt(c.tokens)}`;
+        barEl.appendChild(seg);
+        const item = el('span', 'pipe-legend-item');
+        item.append(el('span', `pipe-dot seg-${i % 6}`), `${CATEGORY_NAMES[c.id] || c.name} ${fmt(c.tokens)}`);
+        legend.appendChild(item);
+      });
+      estimateBox.append(el('div', 'pipe-estimate-sub', 'The governor\'s context'), barEl, legend);
+    }
+
+    // The instruction files every agent reads.
+    const files = el('div', 'pipe-files');
+    files.appendChild(el('div', 'pipe-estimate-sub', 'Instruction files every agent reads'));
+    if (!m) files.appendChild(el('div', 'settings-hint', 'Measure to find them (CLAUDE.md, CLAUDE.local.md, .claude/rules, and AGENTS.md in a project without CLAUDE.md, in the folder and the folders above it, plus your global ones).'));
+    else if (!m.governor.memoryFiles.length) files.appendChild(el('div', 'settings-hint', 'None: there is no CLAUDE.md or AGENTS.md in this folder, the folders above it, or your global settings.'));
+    else {
+      for (const f of [...m.governor.memoryFiles].sort((a, b) => b.tokens - a.tokens)) {
+        const row = el('div', 'pipe-file');
+        const shown = shortFolder(f.path);
+        const name = el('span', 'pipe-file-name', shown.length > 90 ? `…${shown.slice(-89)}` : shown);
+        name.title = f.path;
+        row.append(name, el('span', 'pipe-file-type', f.type || ''), el('span', 'pipe-file-tokens', fmt(f.tokens)));
+        if (f.tokens > 5000) { row.classList.add('big'); row.title = 'A big file: every request of every agent carries it'; }
+        files.appendChild(row);
+      }
+    }
+    if (m?.governor.mcpTools.length) files.appendChild(el('div', 'settings-hint', `MCP tools: ${m.governor.mcpTools.length} (${fmt(m.governor.mcp)}). Sub-agents with every tool get them too.`));
+    if (m?.governor.deferred) files.appendChild(el('div', 'settings-hint', `Not counted: ${fmt(m.governor.deferred)} of tools that load only when an agent looks for them.`));
+    estimateBox.appendChild(files);
+
+    // Per agent type the graph uses.
+    const table = el('div', 'pipe-table');
+    const header = el('div', 'pipe-row pipe-row-head');
+    for (const h of ['Agent', 'Runs', 'Can', 'Model', 'Effort', 'Instructions', 'Tools', 'Files', 'Each request']) header.appendChild(el('span', null, h));
+    table.appendChild(header);
+    for (const [id, v] of sub) {
+      const t = typeOf(id);
+      const runs = cfg.nodes.filter(n => n.type === id).reduce((s2, n) => s2 + n.count, 0) + (cfg.loop.enabled && cfg.loop.reviewer === id ? cfg.loop.count : 0);
+      const row = el('div', `pipe-row ${accessClass(t)}`);
+      const [accessText, accessKind] = ACCESS[t.tools] || ACCESS.all;
+      row.append(el('span', 'pipe-row-name', t.name), el('span', null, `×${runs}`), el('span', `pipe-chip ${accessKind}`, accessText),
+        el('span', t.model === 'inherit' ? 'dim' : 'strong', modelName(t.model)),
+        el('span', t.effort ? 'strong' : 'dim', t.effort ? P.EFFORTS.find(([x]) => x === t.effort)?.[1] : 'Agent\'s'),
+        el('span', null, fmt(v.instructions)), el('span', null, approx + fmt(v.tools)), el('span', null, e.measured ? fmt(v.memory) : '?'),
+        el('span', 'strong', approx + fmt(v.total)));
+      table.appendChild(row);
+    }
+    estimateBox.append(el('div', 'pipe-estimate-sub', 'Each sub-agent'), table,
+      el('div', 'settings-hint pipe-estimate-foot', 'This is the baseline: the smallest each request can be. Every request also carries the conversation so far (for a sub-agent: what the governor hands it, then its own tool results), and an agent makes one request per step it takes. Claude Code caches the repeated part, so the baseline costs much less after an agent\'s first request.'));
+  };
+
+  // The first time the panel is on screen, measure (only Claude Code
+  // starting, no message), unless a measurement from before is there.
+  if (!pipeMeasured && window.IntersectionObserver) {
+    const seen = new IntersectionObserver(entries => {
+      if (!entries.some(x => x.isIntersecting)) return;
+      seen.disconnect();
+      if (!root.classList.contains('off')) measure();
+    });
+    requestAnimationFrame(() => seen.observe(estimateBox));
+  }
 
   render();
   renderTypes();
