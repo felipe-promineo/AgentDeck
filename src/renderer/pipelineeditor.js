@@ -42,6 +42,12 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   svg.classList.add('pipe-lines');
   surface.appendChild(svg);
   scroller.appendChild(surface);
+  // 🧹 in the canvas's top right corner tidies the cards (see tidy below).
+  const canvasWrap = el('div', 'pipe-canvas-wrap');
+  const tidyBtn = el('button', 'pipe-tidy', '🧹');
+  tidyBtn.type = 'button';
+  tidyBtn.title = 'Tidy up: line the cards up in evenly spaced columns, in the order they run, with straight connections that do not cross cards';
+  canvasWrap.append(scroller, tidyBtn);
   const problems = el('div', 'pipe-problems');
 
   // ---------- tokens per request ----------
@@ -50,7 +56,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   // ---------- agent types ----------
   const typesBox = el('div', 'pipe-types');
 
-  root.append(bar, scroller, problems, estimateBox, el('div', 'settings-section-title pipe-types-title', 'Agent types'),
+  root.append(bar, canvasWrap, problems, estimateBox, el('div', 'settings-section-title pipe-types-title', 'Agent types'),
     el('div', 'settings-hint', 'The agents the cards use. Each one is a Claude Code sub-agent with its own instructions, model and tools; the governor gives it its part of the task. Ask the user is the governor itself: it stops and asks you.'),
     typesBox);
 
@@ -105,11 +111,16 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     const maxX = xs.length ? Math.max(...xs) + PIPE_NODE_W : 400;
     const bottom = ys.length ? Math.max(...cfg.nodes.map(n => n.y + heightOf(n.id))) : 230;
     const fails = cfg.edges.filter(P.isFail).length;
-    const midY = minY + PIPE_PORT_Y - 22;
+    // Your task and Done sit level with the cards they connect to, so those
+    // lines are straight; without connections, level with the top row.
+    const levelWith = ids => {
+      const ys = ids.map(id => nodeOf(id)?.y).filter(y => y != null);
+      return (ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : minY) + PIPE_PORT_Y - 22;
+    };
     const doneX = maxX + 70;
     return {
-      task: { x: Math.max(8, minX - PIPE_TERM_W - 70), y: midY },
-      done: { x: doneX, y: midY },
+      task: { x: Math.max(8, minX - PIPE_TERM_W - 70), y: levelWith(cfg.edges.filter(e => e.from === P.TASK).map(e => e.to)) },
+      done: { x: doneX, y: levelWith(cfg.edges.filter(e => e.to === P.DONE && !P.isFail(e)).map(e => e.from)) },
       bottom,
       width: doneX + PIPE_TERM_W + 30,
       height: Math.max(bottom + 50 + fails * 16, 300),
@@ -187,7 +198,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       rounds.className = 'pipe-count';
       rounds.onchange = () => { n.rounds = Math.max(1, Math.min(10, Math.round(Number(rounds.value) || 3))); rounds.value = n.rounds; drawLines(); check(); };
       const target = cfg.edges.find(e => e.from === n.id && P.isFail(e));
-      const where = el('span', 'pipe-fail-label', target ? `✕ back to ${typeOf(nodeOf(target.to)?.type)?.name || '?'}` : '✕ drag the red dot back');
+      const where = el('span', 'pipe-fail-label', target ? `✕ back to ${typeOf(nodeOf(target.to)?.type)?.name || '?'}` : '✕ drag ● back');
       where.title = target ? 'When it is not right, the work goes back there' : 'Drag the red dot at the bottom of this card to the step the work goes back to when it is not right';
       back.append(where, el('span', 'pipe-fail-max', '≤'), rounds, el('span', 'pipe-fail-max', '×'));
       body.appendChild(back);
@@ -330,7 +341,21 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       svg.appendChild(g);
       return g;
     };
-    for (const edge of cfg.edges.filter(e => !P.isFail(e))) edgeGroup(edge, curve(portPoint(edge.from, 'out'), portPoint(edge.to, 'in')), false);
+    // A connection that would run through a card on its way (one that skips
+    // a column, say) goes over the cards instead, each in its own lane.
+    let lane = 0;
+    const top = cfg.nodes.length ? Math.min(...cfg.nodes.map(n => n.y)) : 110;
+    for (const edge of cfg.edges.filter(e => !P.isFail(e))) {
+      const a = portPoint(edge.from, 'out');
+      const b = portPoint(edge.to, 'in');
+      const blocked = cfg.nodes.some(n => n.id !== edge.from && n.id !== edge.to
+        && n.x > Math.min(a.x, b.x) - 4 && n.x + PIPE_NODE_W < Math.max(a.x, b.x) + 4
+        && Math.max(a.y, b.y) > n.y - 6 && Math.min(a.y, b.y) < n.y + heightOf(n.id) + 6);
+      if (!blocked || b.x <= a.x) { edgeGroup(edge, curve(a, b), false); continue; }
+      const y = top - 26 - lane++ * 14;
+      const r = 14;
+      edgeGroup(edge, `M${a.x},${a.y} C${a.x + 24},${a.y} ${a.x + 24},${y} ${a.x + 24 + r},${y} L${b.x - 24 - r},${y} C${b.x - 24},${y} ${b.x - 24},${b.y} ${b.x},${b.y}`, false);
+    }
     // "Not right": out of the red dot at the card's bottom, along a lane
     // under the cards, and up into the bottom of the card it goes back to.
     cfg.edges.filter(P.isFail).forEach((edge, i) => {
@@ -339,9 +364,18 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       const low = layoutNow.bottom + 26 + i * 16;
       const r = 14;
       const dir = to.x < from.x ? -1 : 1;
-      const d = `M${from.x},${from.y + 7} L${from.x},${low - r} Q${from.x},${low} ${from.x + dir * r},${low} L${to.x - dir * r},${low} Q${to.x},${low} ${to.x},${low - r} L${to.x},${to.y}`;
-      const g = edgeGroup(edge, d, true);
+      // A card under the dot (a column of several): go down the gap right
+      // of the column instead of through it.
       const gate = nodeOf(edge.from);
+      const under = cfg.nodes.some(n => n.id !== gate.id && n.y > gate.y && n.x < from.x + 8 && n.x + PIPE_NODE_W > from.x - 8);
+      const d = under
+        ? (() => {
+          const gx = gate.x + PIPE_NODE_W + 30 + i * 6;
+          const y1 = from.y + 18;
+          return `M${from.x},${from.y + 7} L${from.x},${y1 - r} Q${from.x},${y1} ${from.x + r},${y1} L${gx - r},${y1} Q${gx},${y1} ${gx},${y1 + r} L${gx},${low - r} Q${gx},${low} ${gx - r},${low} L${to.x - dir * r},${low} Q${to.x},${low} ${to.x},${low - r} L${to.x},${to.y}`;
+        })()
+        : `M${from.x},${from.y + 7} L${from.x},${low - r} Q${from.x},${low} ${from.x + dir * r},${low} L${to.x - dir * r},${low} Q${to.x},${low} ${to.x},${low - r} L${to.x},${to.y}`;
+      const g = edgeGroup(edge, d, true);
       const label = svgEl('text', { x: (from.x + to.x) / 2, y: low - 5, class: 'pipe-fail-caption', 'text-anchor': 'middle' });
       label.textContent = `✕ not right → back to ${typeOf(nodeOf(edge.to)?.type)?.name || edge.to} (up to ${gate.rounds}×)`;
       g.appendChild(label);
@@ -401,6 +435,87 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       problems.appendChild(row);
     }
   };
+
+  // ---------- tidying up ----------
+  // Columns by the longest way from Your task over the normal connections,
+  // so every card sits right of everything that feeds it (Ask the user
+  // between the analyst and the planner gets its own column between
+  // theirs). Within a column, cards are ordered by where the cards feeding
+  // them are (fewer crossings) and stacked around one middle line, so a
+  // single row is perfectly straight. Cards only reached by going back, or
+  // not at all, go in a row underneath.
+  const TIDY_GAP_X = 64;
+  const TIDY_GAP_Y = 40;
+  const TIDY_X = PIPE_TERM_W + 100;
+  const TIDY_Y = 120;
+  const tidyTargets = () => {
+    const normal = cfg.edges.filter(e => !P.isFail(e));
+    const depth = new Map();
+    // Longest path (the normal connections have no circles once valid; a
+    // circle stops after as many passes as there are cards).
+    for (const n of cfg.nodes) if (normal.some(e => e.from === P.TASK && e.to === n.id)) depth.set(n.id, 0);
+    for (let pass = 0; pass < cfg.nodes.length; pass++) {
+      let moved = false;
+      for (const e of normal) {
+        if (e.from === P.TASK || e.to === P.DONE || !depth.has(e.from)) continue;
+        const d = depth.get(e.from) + 1;
+        if (!depth.has(e.to) || depth.get(e.to) < d) { depth.set(e.to, d); moved = true; }
+      }
+      if (!moved) break;
+    }
+    const columns = [];
+    for (const [id, d] of depth) (columns[d] = columns[d] || []).push(id);
+    const placed = new Map();
+    const order = new Map();
+    let x = TIDY_X;
+    for (const column of columns.filter(Boolean)) {
+      const fed = id => {
+        const from = normal.filter(e => e.to === id && order.has(e.from)).map(e => order.get(e.from));
+        return from.length ? from.reduce((a, b) => a + b, 0) / from.length : nodeOf(id).y / 1000;
+      };
+      column.sort((a, b) => fed(a) - fed(b) || nodeOf(a).y - nodeOf(b).y);
+      column.forEach((id, i) => order.set(id, i));
+      const total = column.reduce((sum, id) => sum + heightOf(id), 0) + (column.length - 1) * TIDY_GAP_Y;
+      // One card: its top on the row, so ports (a fixed distance below a
+      // card's top) line up. Several: stacked around the row's middle.
+      let y = column.length === 1 ? TIDY_Y : TIDY_Y + heightOf(column[0]) / 2 - total / 2;
+      for (const id of column) { placed.set(id, { x, y }); y += heightOf(id) + TIDY_GAP_Y; }
+      x += PIPE_NODE_W + TIDY_GAP_X;
+    }
+    // The rest: a row under everything.
+    const rest = cfg.nodes.filter(n => !placed.has(n.id)).sort((a, b) => a.x - b.x);
+    if (rest.length) {
+      const below = Math.max(...[...placed].map(([id, p]) => p.y + heightOf(id)), TIDY_Y) + 90 + cfg.edges.filter(P.isFail).length * 16;
+      rest.forEach((n, i) => placed.set(n.id, { x: TIDY_X + i * (PIPE_NODE_W + TIDY_GAP_X), y: below }));
+    }
+    // Room above the top row for connections that go over the cards.
+    const topY = Math.min(...[...placed.values()].map(p => p.y));
+    const lanes = normal.filter(e => e.from !== P.TASK && e.to !== P.DONE && (depth.get(e.to) ?? 0) - (depth.get(e.from) ?? 0) > 1).length;
+    const shift = Math.max(0, 90 + lanes * 14 - topY);
+    if (shift) for (const p of placed.values()) p.y += shift;
+    return placed;
+  };
+  const tidy = () => {
+    const targets = tidyTargets();
+    const from = new Map(cfg.nodes.map(n => [n.id, { x: n.x, y: n.y }]));
+    const start = performance.now();
+    const ease = t => 1 - Math.pow(1 - t, 3);
+    window.uiSound?.('tick');
+    const step = now => {
+      const t = Math.min(1, (now - start) / 320);
+      for (const n of cfg.nodes) {
+        const a = from.get(n.id), b = targets.get(n.id);
+        if (!b) continue;
+        n.x = Math.round(a.x + (b.x - a.x) * ease(t));
+        n.y = Math.round(a.y + (b.y - a.y) * ease(t));
+      }
+      place();
+      if (t < 1) requestAnimationFrame(step);
+      else scroller.scrollTo({ left: 0, top: 0, behavior: 'smooth' });
+    };
+    requestAnimationFrame(step);
+  };
+  tidyBtn.onclick = tidy;
 
   // ---------- the whole canvas ----------
   const render = () => {
