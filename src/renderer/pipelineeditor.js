@@ -6,6 +6,11 @@
 // multiAgent setting as it is in the editor now (without `enabled`, which
 // the main toggle in settings.js owns).
 //
+// Profiles: each one is a graph of its own (a Unity task implementer, a Game
+// Engine one...); the agent types are shared. The bar on top switches,
+// renames, adds and deletes them, and picks the default one, which the ⛓
+// Pipeline button under the message box offers first.
+//
 // The canvas: Your task on the left, Done on the right, the agents between
 // them. Drag a card by its title to move it; drag from the dot on a card's
 // right side to another card to connect them; click a line to remove it. A
@@ -20,11 +25,86 @@ const PIPE_TERM_W = 112;
 // The last measurement (see the estimate panel), kept while the app runs so
 // reopening Settings does not measure again.
 let pipeMeasured = null;
+// Your skills (slashcommands.js), for the Use a skill cards, per folder.
+const pipeSkills = new Map();
 
 function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   const P = window.Pipeline;
-  let cfg = P.normalize(saved);
+  const all = P.normalize(saved);
+  // The profile on the canvas: cfg is its graph with the shared types.
+  let current = all.defaultProfile;
+  const profileOf = id => all.profiles.find(p => p.id === id);
+  let cfg = { types: all.types, nodes: profileOf(current).nodes, edges: profileOf(current).edges };
+  // The canvas's graph back into its profile (cfg is replaced by Start from and Reset).
+  const syncProfile = () => {
+    const p = profileOf(current);
+    if (p) { p.nodes = cfg.nodes; p.edges = cfg.edges; }
+    all.types = cfg.types;
+  };
   const root = el('div', 'pipe-editor');
+
+  // ---------- profiles ----------
+  const profileBar = el('div', 'pipe-profiles');
+  const profileSelect = document.createElement('select');
+  profileSelect.className = 'pipe-profile-select';
+  profileSelect.title = 'The profile on the canvas. ★ is the default one: the ⛓ Pipeline button offers it first';
+  const profileName = settingsInput('text', '', { placeholder: 'Profile name', maxLength: 60 });
+  profileName.className = 'pipe-profile-name';
+  const makeDefault = el('button', 'settings-btn', '★ Make default');
+  makeDefault.type = 'button';
+  const newProfile = el('button', 'settings-btn', '+ New profile');
+  newProfile.type = 'button';
+  newProfile.title = 'A copy of this profile, to change. Start from… replaces its cards with a ready-made pipeline';
+  const deleteProfile = el('button', 'settings-btn danger-text', 'Delete profile');
+  deleteProfile.type = 'button';
+  profileBar.append(el('span', 'pipe-profiles-label', 'Profile'), profileSelect, profileName, makeDefault, newProfile, deleteProfile);
+  const renderProfiles = () => {
+    profileSelect.replaceChildren(...all.profiles.map(p => new Option(`${p.id === all.defaultProfile ? '★ ' : ''}${p.name}`, p.id)));
+    profileSelect.value = current;
+    profileName.value = profileOf(current).name;
+    makeDefault.disabled = current === all.defaultProfile;
+    makeDefault.textContent = current === all.defaultProfile ? '★ Default' : '★ Make default';
+    makeDefault.title = current === all.defaultProfile ? 'The ⛓ Pipeline button offers this profile first' : 'Make the ⛓ Pipeline button offer this profile first';
+    deleteProfile.disabled = all.profiles.length < 2;
+  };
+  const showProfile = id => {
+    syncProfile();
+    current = id;
+    cfg = { types: all.types, nodes: profileOf(id).nodes, edges: profileOf(id).edges };
+    renderProfiles();
+    render();
+    renderTypes();
+  };
+  profileSelect.onchange = () => { window.uiSound?.('tick'); showProfile(profileSelect.value); };
+  profileName.oninput = () => {
+    profileOf(current).name = profileName.value.trim().slice(0, 60) || 'Pipeline';
+    const option = profileSelect.selectedOptions[0];
+    if (option) option.textContent = `${current === all.defaultProfile ? '★ ' : ''}${profileOf(current).name}`;
+  };
+  makeDefault.onclick = () => { all.defaultProfile = current; window.uiSound?.('tick'); renderProfiles(); };
+  newProfile.onclick = () => {
+    syncProfile();
+    const taken = new Set(all.profiles.map(p => p.id));
+    let id;
+    do id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`; while (taken.has(id));
+    const from = profileOf(current);
+    all.profiles.push({ id, name: `${from.name} (copy)`.slice(0, 60), nodes: JSON.parse(JSON.stringify(cfg.nodes)), edges: JSON.parse(JSON.stringify(cfg.edges)) });
+    showProfile(id);
+    profileName.focus();
+    profileName.select();
+  };
+  deleteProfile.onclick = () => {
+    if (all.profiles.length < 2) return;
+    const gone = current;
+    all.profiles = all.profiles.filter(p => p.id !== gone);
+    if (all.defaultProfile === gone) all.defaultProfile = all.profiles[0].id;
+    current = all.defaultProfile;
+    window.uiSound?.('tickDown');
+    cfg = { types: all.types, nodes: profileOf(current).nodes, edges: profileOf(current).edges };
+    renderProfiles();
+    render();
+    renderTypes();
+  };
 
   // ---------- toolbar ----------
   const bar = el('div', 'pipe-toolbar');
@@ -62,7 +142,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
   // ---------- agent types ----------
   const typesBox = el('div', 'pipe-types');
 
-  root.append(bar, canvasWrap, problems, estimateBox, el('div', 'settings-section-title pipe-types-title', 'Agent types'),
+  root.append(profileBar, bar, canvasWrap, problems, estimateBox, el('div', 'settings-section-title pipe-types-title', 'Agent types'),
     el('div', 'settings-hint', 'The agents the cards use. Each one is a Claude Code sub-agent with its own instructions, model and tools; the governor gives it its part of the task. Ask the user is the governor itself: it stops and asks you.'),
     typesBox);
 
@@ -173,6 +253,41 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     };
     return input;
   };
+  // Your skills, as Claude Code finds them in the folder (yours, the
+  // project's and your plugins'), grouped by where they come from.
+  const skillSources = { project: 'This project', user: 'Yours', plugin: 'Plugins' };
+  const skillFolder = folder || folders[0] || '';
+  const loadSkills = () => {
+    if (pipeSkills.has(skillFolder) || !window.deck?.slashCommands) return;
+    pipeSkills.set(skillFolder, null);
+    window.deck.slashCommands(skillFolder).then(list => {
+      pipeSkills.set(skillFolder, (list || []).filter(c => c.kind === 'skill'));
+      render();
+    }).catch(() => pipeSkills.set(skillFolder, []));
+  };
+  const skillSelect = n => {
+    const select = document.createElement('select');
+    select.className = 'pipe-skill';
+    const skills = pipeSkills.get(skillFolder);
+    select.appendChild(new Option(skills ? (skills.length ? 'Pick a skill…' : 'No skills found') : 'Loading skills…', ''));
+    for (const [source, label] of Object.entries(skillSources)) {
+      const mine = (skills || []).filter(x => x.source === source);
+      if (!mine.length) continue;
+      const group = Object.assign(document.createElement('optgroup'), { label });
+      for (const x of mine) {
+        const o = new Option(x.name, x.name);
+        o.title = x.description || '';
+        group.appendChild(o);
+      }
+      select.appendChild(group);
+    }
+    if (n.skill && !(skills || []).some(x => x.name === n.skill)) select.appendChild(new Option(skills ? `${n.skill} (not found here)` : n.skill, n.skill));
+    select.value = n.skill || '';
+    select.title = (skills || []).find(x => x.name === n.skill)?.description || 'The skill this step runs';
+    select.onchange = () => { n.skill = select.value; render(); };
+    return select;
+  };
+
   const port = (kind, id) => {
     const p = el('div', `pipe-port pipe-port-${kind}`);
     p.dataset.node = id;
@@ -211,10 +326,22 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     }));
     // Asking you is the governor itself: it never runs twice at once.
     if (t?.kind !== 'ask') row.append(el('span', 'pipe-times', '×'), countInput(n.count, v => { n.count = v; render(); }, 'How many agents run this step at the same time'));
-    const note = settingsInput('text', n.note, { placeholder: t?.kind === 'ask' ? 'What to ask about (optional)' : 'Note for this step (optional)' });
-    note.className = 'pipe-note';
-    note.oninput = () => { n.note = note.value; };
-    body.append(row, note);
+    body.appendChild(row);
+    // Use a skill: which of your skills; Custom prompt: what the step does.
+    if (t?.kind === 'skill') body.appendChild(skillSelect(n));
+    if (t?.kind === 'prompt') {
+      const text = settingsText(n.prompt, 'What this step does, for example: Write a CHANGELOG entry for the change');
+      text.className = 'pipe-prompt';
+      text.rows = 3;
+      text.oninput = () => { n.prompt = text.value; };
+      text.onchange = () => check();
+      body.appendChild(text);
+    } else {
+      const note = settingsInput('text', n.note, { placeholder: t?.kind === 'ask' ? 'What to ask about (optional)' : 'Note for this step (optional)' });
+      note.className = 'pipe-note';
+      note.oninput = () => { n.note = note.value; };
+      body.appendChild(note);
+    }
     card.append(port('in', n.id), head, body, port('out', n.id));
     // A verdict: where the work goes when it is not right, and how often.
     if (t?.verdict) {
@@ -585,8 +712,8 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     renderTypes();
   };
   reset.onclick = () => {
-    const enabled = cfg.enabled;
-    cfg = { ...P.defaults(), enabled };
+    // The types as they came, and this profile's graph as the General one.
+    cfg = { types: P.defaults().types, ...P.template('default') };
     window.uiSound?.('tick');
     render();
     renderTypes();
@@ -851,13 +978,16 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     requestAnimationFrame(() => seen.observe(estimateBox));
   }
 
+  loadSkills();
+  renderProfiles();
   render();
   renderTypes();
 
   return {
     element: root,
     value: () => {
-      const { enabled, ...rest } = P.normalize(cfg);
+      syncProfile();
+      const { enabled, ...rest } = P.normalize(all);
       return rest;
     },
     problems: () => P.validate(cfg),

@@ -57,7 +57,7 @@ function commandsIn(dir, prefix, source, out, depth = 0) {
     if (e.isDirectory() && depth < 3) commandsIn(full, `${prefix}${e.name}:`, source, out, depth + 1);
     else if (e.isFile() && e.name.endsWith('.md')) {
       const fm = frontMatter(full);
-      out.push({ name: prefix + e.name.slice(0, -3), description: fm.description || '', hint: fm['argument-hint'] || '', source });
+      out.push({ name: prefix + e.name.slice(0, -3), description: fm.description || '', hint: fm['argument-hint'] || '', source, kind: 'command' });
     }
   }
 }
@@ -71,7 +71,7 @@ function skillsIn(dir, prefix, source, out) {
     // A name you can't type after / ("create view MVC") is only a label:
     // the skill is then run by its folder's name.
     const name = /^[\w:.-]+$/.test(fm.name || '') ? fm.name : e.name;
-    out.push({ name: prefix + name, description: fm.description || '', hint: fm['argument-hint'] || '', source });
+    out.push({ name: prefix + name, description: fm.description || '', hint: fm['argument-hint'] || '', source, kind: 'skill' });
   }
 }
 
@@ -89,7 +89,7 @@ function plugins() {
   return list;
 }
 
-// Resolves with [{ name, description, hint, source: 'project'|'user'|'plugin' }],
+// Resolves with [{ name, description, hint, source: 'project'|'user'|'plugin', kind: 'command'|'skill' }],
 // without duplicates (the project's version of a name comes first).
 function list(cwd) {
   const out = [];

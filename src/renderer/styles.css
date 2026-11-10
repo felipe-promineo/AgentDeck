@@ -3031,6 +3031,14 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 /* ---------- multi-agent pipeline (pipelineeditor.js, the ⛓ Pipeline button) ---------- */
 .composer-pipeline.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 6px; }
 .composer-pipeline:disabled { opacity: 0.45; cursor: default; }
+.pipeline-panel { width: min(440px, calc(100vw - 48px)); }
+.pipeline-row { display: grid; justify-content: stretch; grid-template-columns: 22px minmax(0, 1fr); grid-template-areas: "star name" "star steps"; column-gap: 6px; align-items: center; }
+.pipeline-row > .pipeline-name { grid-area: name; font-weight: 700; }
+.pipeline-row > .pipeline-steps { grid-area: steps; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pipeline-row:first-child > .pipeline-name, .pipeline-row:first-child > .pipeline-steps { grid-column: 2; }
+.pipeline-star { grid-area: star; background: none; border: none; padding: 0; font-size: 15px; color: var(--text-faint); cursor: pointer; }
+.pipeline-star.on { color: var(--accent); cursor: default; }
+.pipeline-star:not(.on):hover { color: var(--accent); }
 
 .pipe-editor { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px; transition: opacity 0.2s; }
 .pipe-editor.off { opacity: 0.4; pointer-events: none; filter: grayscale(0.6); }
@@ -3067,6 +3075,12 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-times { color: var(--text-faint); font-size: 12px; }
 .pipe-editor input.pipe-count { width: 46px; padding: 4px 4px 4px 7px; font-size: 12px; }
 .pipe-editor input.pipe-note { width: 100%; padding: 4px 7px; font-size: 12px; }
+.pipe-editor textarea.pipe-prompt { width: 100%; min-height: 54px; padding: 4px 7px; font-size: 12px; resize: vertical; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; }
+.pipe-editor select.pipe-skill { width: 100%; padding: 3px 6px; font-size: 12px; }
+.pipe-profiles { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); }
+.pipe-profiles-label { font-weight: 700; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.pipe-profiles .pipe-profile-select { width: auto; min-width: 200px; font-weight: 700; }
+.pipe-profiles input.pipe-profile-name { width: 220px; padding: 5px 8px; }
 .pipe-node.drop-target, .pipe-term.drop-target { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
 .pipe-node.flash, .pipe-term.flash, @keyframes pipe-flash { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 55%, transparent); } }
 

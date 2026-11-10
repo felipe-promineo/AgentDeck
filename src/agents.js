@@ -101,7 +101,9 @@ function claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permission
   // A pipeline agent (the Pipeline button under the message box) is the
   // governor: it gets the pipeline's sub-agents and its instructions. Only
   // while the pipeline is on in Settings; otherwise it is a normal agent.
+  // `asPipeline` is the profile to run (true: the default one).
   const governed = !!asPipeline && config.multiAgent?.enabled;
+  const run = governed ? pipeline.pick(config.multiAgent, typeof asPipeline === 'string' ? asPipeline : undefined) : null;
   const args = [
     '-p',
     '--input-format', 'stream-json',
@@ -113,9 +115,9 @@ function claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permission
     '--permission-prompt-tool', 'stdio',
     // Without this flag the CLI refuses a later switch to bypass mode.
     '--allow-dangerously-skip-permissions',
-    '--append-system-prompt', governed ? `${SYSTEM_PROMPT}\n\n${pipeline.governorPrompt(config.multiAgent)}` : SYSTEM_PROMPT,
+    '--append-system-prompt', governed ? `${SYSTEM_PROMPT}\n\n${pipeline.governorPrompt(run)}` : SYSTEM_PROMPT,
   ];
-  if (governed) args.push('--agents', JSON.stringify(pipeline.subagents(config.multiAgent)));
+  if (governed) args.push('--agents', JSON.stringify(pipeline.subagents(run)));
   // "auto" is the app's own (automodel.js picks a real model before this);
   // if one ever slips through, Claude Code uses its default.
   if (model && model !== 'default' && model !== 'auto') args.push('--model', model);
@@ -739,6 +741,7 @@ function contextProbe(config, args, cwd) {
 async function measurePipeline(config, multiAgent, cwd) {
   if (config.claudeEnabled === false) return { error: 'Claude is off in Settings → Providers.' };
   if (!cwd || !require('fs').existsSync(cwd)) return { error: 'Pick a folder that exists.' };
+  // `multiAgent` is the editor's profile as one graph: it is the one measured.
   const governed = { ...config, multiAgent: { ...pipeline.normalize(multiAgent), enabled: true } };
   const model = config.defaultModel && config.defaultModel !== 'auto' ? config.defaultModel : undefined;
   const sets = Object.entries(pipeline.TOOL_SETS).filter(([, tools]) => tools);

@@ -291,34 +291,54 @@ function renderDraftButtons() {
 
 // ---------- multi-agent pipeline ----------
 
-// The ⛓ Pipeline button under the message box: the next agent runs the
-// pipeline from Settings → Multi-agent (pipeline.js). It shows only while
-// the pipeline is on in Settings, and it remembers its last position.
+// The ⛓ Pipeline button under the message box: the next agent runs one of
+// the pipeline's profiles from Settings → Multi-agent (pipeline.js), picked
+// in the menu the button opens; ★ marks the default profile. It shows only
+// while the pipeline is on in Settings, and it remembers the last choice.
 function pipelineEnabled() {
   return !!state.config?.multiAgent?.enabled;
 }
 
+const pipelineProfiles = () => state.config?.multiAgent?.profiles || [];
+const defaultPipelineProfile = () => state.config?.multiAgent?.defaultProfile || pipelineProfiles()[0]?.id || '';
+// A profile id that still exists, or the default one.
+const livePipelineProfile = id => (pipelineProfiles().some(p => p.id === id) ? id : defaultPipelineProfile());
+const pipelineProfileName = id => pipelineProfiles().find(p => p.id === livePipelineProfile(id))?.name || 'Pipeline';
+
+// The last choice: '' (a normal agent) or a profile id. Before profiles it
+// was on or off: on is the default profile.
 function pipelineWanted() {
-  try { return localStorage.getItem('pipelineOn') === '1'; } catch { return false; }
+  try {
+    const saved = localStorage.getItem('pipelineProfile');
+    if (saved !== null) return saved;
+    return localStorage.getItem('pipelineOn') === '1' ? defaultPipelineProfile() : '';
+  } catch { return ''; }
 }
 
-// Whether a new agent from this draft is a pipeline (Claude only: the
-// pipeline's sub-agents are Claude Code's).
+// The profile a new agent from this draft runs, or '' for a normal agent
+// (Claude only: the pipeline's sub-agents are Claude Code's).
 function draftPipeline(d) {
-  return pipelineEnabled() && !!d.pipeline && providerOf(startChoice(d.choice)) !== 'codex';
+  return pipelineEnabled() && d.pipeline && providerOf(startChoice(d.choice)) !== 'codex' ? livePipelineProfile(d.pipeline) : '';
 }
 
-// Saved sessions that ran as a pipeline, so resuming one keeps it.
+// Saved sessions that ran as a pipeline, with their profile, so resuming one
+// keeps it: { sessionId: { at, profile } } (a number before profiles).
 function pipelineSessions() {
   try { return JSON.parse(localStorage.getItem('pipelineSessions') || '{}'); } catch { return {}; }
 }
+function sessionPipeline(sessionId) {
+  const saved = pipelineSessions()[sessionId];
+  if (!saved) return '';
+  return livePipelineProfile(typeof saved === 'object' ? saved.profile : '');
+}
 
-function rememberPipeline(sessionId) {
+function rememberPipeline(sessionId, profile) {
   const all = pipelineSessions();
-  if (all[sessionId]) return;
-  all[sessionId] = Date.now();
+  if (all[sessionId]?.profile === profile) return;
+  all[sessionId] = { at: Date.now(), profile };
   // The newest 500 are enough.
-  const keep = Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, 500);
+  const at = v => (typeof v === 'object' ? v.at : v) || 0;
+  const keep = Object.entries(all).sort((a, b) => at(b[1]) - at(a[1])).slice(0, 500);
   try { localStorage.setItem('pipelineSessions', JSON.stringify(Object.fromEntries(keep))); } catch { /* not important */ }
 }
 
@@ -332,22 +352,77 @@ function renderPipelineButton() {
   const on = draftPipeline(d);
   button.classList.toggle('on', on);
   button.disabled = codex;
-  button.textContent = on ? '⛓ Pipeline on' : '⛓ Pipeline';
+  button.textContent = on ? `⛓ ${pipelineProfileName(on)} ▾` : '⛓ Pipeline ▾';
   button.title = codex
     ? 'The multi-agent pipeline runs on Claude only'
     : on
-      ? `The new agent is a governor that runs the pipeline:\n${window.Pipeline.summary(state.config.multiAgent)}\nChange it in Settings → Multi-agent. Click to start a normal agent instead.`
-      : 'Run the multi-agent pipeline from Settings → Multi-agent for the new agent';
+      ? `The new agent is a governor that runs the ${pipelineProfileName(on)} pipeline:\n${window.Pipeline.summary({ ...state.config.multiAgent, profileId: on })}\nClick to pick another profile or a normal agent. Change them in Settings → Multi-agent.`
+      : 'Pick a pipeline profile from Settings → Multi-agent for the new agent';
 }
 
-$('composer-pipeline').onclick = () => {
+// The menu of the ⛓ Pipeline button: a normal agent, or one of the
+// profiles (★ the default one; ☆ on another makes it the default). It opens
+// above the button, like the folder menu.
+function choosePipeline() {
   const d = ensureDraft();
-  d.pipeline = !d.pipeline;
-  try { localStorage.setItem('pipelineOn', d.pipeline ? '1' : '0'); } catch { /* not important */ }
-  sfx(d.pipeline ? 'tick' : 'tickDown');
-  renderPipelineButton();
-  $('input').focus();
-};
+  const open = document.querySelector('.pipeline-panel');
+  document.querySelector('.group-panel')?.remove();
+  sfx(open ? 'tickDown' : 'tick');
+  if (open) return; // a second click on the button closes it
+  const panel = el('div', 'group-panel pipeline-panel');
+  const list = el('div', 'group-panel-list');
+  panel.appendChild(list);
+  $('composer-pipeline').parentNode.appendChild(panel);
+  const close = () => {
+    panel.remove();
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const outside = e => { if (!panel.contains(e.target) && e.target !== $('composer-pipeline')) close(); };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const pick = id => {
+    d.pipeline = id;
+    try { localStorage.setItem('pipelineProfile', id); } catch { /* not important */ }
+    sfx(id ? 'select' : 'tickDown');
+    close();
+    renderPipelineButton();
+    $('input').focus();
+  };
+  const render = () => {
+    list.innerHTML = '';
+    const chosen = draftPipeline(d);
+    const none = el('div', 'group-panel-item pipeline-row' + (chosen ? '' : ' selected'));
+    none.append(el('span', 'pipeline-name', 'No pipeline'), el('span', 'pipeline-steps', 'A normal agent'));
+    none.onclick = () => pick('');
+    list.appendChild(none);
+    for (const p of pipelineProfiles()) {
+      const isDefault = p.id === defaultPipelineProfile();
+      const row = el('div', 'group-panel-item pipeline-row' + (p.id === chosen ? ' selected' : ''));
+      const star = el('button', 'pipeline-star' + (isDefault ? ' on' : ''), isDefault ? '★' : '☆');
+      star.type = 'button';
+      star.title = isDefault ? 'The default profile' : 'Make this the default profile';
+      star.onclick = async e => {
+        e.stopPropagation();
+        if (isDefault) return;
+        const multiAgent = { ...state.config.multiAgent, defaultProfile: p.id };
+        const saved = await window.deck.saveConfig({ multiAgent }).catch(() => null);
+        state.config = saved || { ...state.config, multiAgent };
+        sfx('tick');
+        render();
+      };
+      const steps = window.Pipeline.summary({ ...state.config.multiAgent, profileId: p.id });
+      row.title = steps;
+      row.append(star, el('span', 'pipeline-name', p.name), el('span', 'pipeline-steps', steps));
+      row.onclick = () => pick(p.id);
+      list.appendChild(row);
+    }
+  };
+  render();
+  document.addEventListener('mousedown', outside, true);
+  document.addEventListener('keydown', onKey, true);
+}
+
+$('composer-pipeline').onclick = choosePipeline;
 
 // The folder menu: recent folders, each with ✕ to remove it from the list,
 // and Choose folder… at the bottom. It opens above the folder button, like
@@ -3682,8 +3757,9 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
   const agent = { id, title, cwd, status: 'starting', sessionId: resume?.session.id || null, view, transcript, unread: false, choice, mode: permissionMode,
     // A resumed session stays in its group. A new one goes to the group picked in the form.
     groupId: resume ? groupOf(resume.session.id) : groupId || null,
-    // A pipeline governor (see renderPipelineButton); a resumed one stays one.
-    pipeline: !!(pipeline || (resume && pipelineSessions()[resume.session.id])) && pipelineEnabled() && providerOf(choice) !== 'codex' };
+    // A pipeline governor: the profile it runs (see renderPipelineButton); a
+    // resumed one stays one, with the profile it had.
+    pipeline: (pipelineEnabled() && providerOf(choice) !== 'codex' && (pipeline || (resume && sessionPipeline(resume.session.id)))) || '' };
   state.agents.set(id, agent);
   // Auto: the rules pick a model now, and Haiku's rating comes while Claude
   // Code starts (see settleAuto). A resumed session keeps what Auto picked.
@@ -3716,7 +3792,7 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
         : `${PROVIDER_NAMES[fellBackFrom]} is off, so this agent runs on ${PROVIDER_NAMES[providerOf(choice)]}.`);
     }
     if (folderNote) transcript.note(folderNote);
-    if (agent.pipeline && !resume) transcript.note(`Runs the multi-agent pipeline: ${window.Pipeline.summary(state.config.multiAgent)}.`);
+    if (agent.pipeline && !resume) transcript.note(`Runs the ${pipelineProfileName(agent.pipeline)} pipeline: ${window.Pipeline.summary({ ...state.config.multiAgent, profileId: agent.pipeline })}.`);
     if (forkFrom) {
       agent.forkedFrom = forkFrom;
       transcript.note(`Continues from "${forkFrom.title}", so it knows what that agent did.`);
@@ -5120,7 +5196,7 @@ window.deck.onSession((id, sessionId) => {
   if (named && !agentNames()[sessionId]) setAgentName(sessionId, named);
   rememberTitle(a);
   rememberNotesSeen(a);
-  if (a.pipeline) rememberPipeline(sessionId);
+  if (a.pipeline) rememberPipeline(sessionId, a.pipeline);
   // The CLI reports the session id once the session exists. That is when we
   // can save the group, and it also covers a resume that got a new id.
   if (a.groupId && groupOf(sessionId) !== a.groupId) assignGroup(sessionId, a.groupId);
