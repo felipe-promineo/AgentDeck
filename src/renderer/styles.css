@@ -3210,3 +3210,52 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
   border-radius: 10px; background: var(--bg-panel); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
 .pipe-tidy:hover { background: var(--bg-hover); transform: rotate(-12deg); }
 .pipe-tidy:active { transform: rotate(8deg) scale(0.94); }
+
+/* A pipeline agent's steps beside the chat (pipelineprogress.js): in the
+   right margin (the left one when something lies under it), or a chip at
+   the bottom left of a narrow chat that opens the graph. */
+.pp-wrap { position: sticky; top: 0; height: 0; z-index: 6; }
+.pp-panel { position: absolute; top: 20px; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  max-height: calc(100cqh - 150px); overflow-y: auto; font-size: 12px;
+  background: rgba(34, 28, 22, 0.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); transition: opacity 0.18s; }
+.pp-panel.side-right { right: 16px; }
+.pp-panel.side-left { left: 16px; }
+.pp-panel.faded { opacity: 0.25; }
+.pp-panel.faded:hover { opacity: 1; }
+.pp-head { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 0; background: none; border: none; text-align: left; cursor: default; color: inherit; font: inherit; }
+.pp-title { font-weight: 700; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.pp-status { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.pp-panel.stopped .pp-status { color: var(--err); }
+.pp-body { display: flex; flex-direction: column; }
+.pp-stage { display: flex; gap: 6px; }
+.pp-link { width: 2px; height: 10px; margin: 0 auto; background: var(--border); border-radius: 1px; }
+.pp-section { margin-top: 10px; margin-bottom: 4px; font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.pp-node { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); transition: border-color 0.2s, background 0.2s, opacity 0.2s; }
+.pp-mark { flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--text-faint); }
+.pp-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.pp-round { flex: none; font-size: 10px; color: var(--text-dim); }
+.pp-round:empty { display: none; }
+.pp-pending .pp-label { color: var(--text-dim); }
+.pp-running { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
+.pp-running .pp-mark::before { content: ''; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: pp-spin 0.9s linear infinite; }
+@keyframes pp-spin { to { transform: rotate(360deg); } }
+.pp-waiting { border-color: var(--busy); background: color-mix(in srgb, var(--busy) 12%, var(--bg)); animation: pp-pulse 1.6s ease-in-out infinite; }
+@keyframes pp-pulse { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--busy) 25%, transparent); } }
+.pp-done { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.pp-done .pp-mark { color: var(--ok); }
+.pp-changes { border-color: color-mix(in srgb, var(--busy) 55%, var(--border)); }
+.pp-changes .pp-mark { color: var(--busy); }
+.pp-failed { border-color: var(--err); background: color-mix(in srgb, var(--err) 12%, var(--bg)); }
+.pp-failed .pp-mark { color: var(--err); }
+.pp-notrun, .pp-blocked { opacity: 0.55; border-style: dashed; }
+.pp-notrun .pp-label, .pp-blocked .pp-label { text-decoration: line-through; color: var(--text-dim); }
+.pp-blocked { border-color: color-mix(in srgb, var(--err) 50%, var(--border)); }
+.pp-blocked .pp-mark { color: var(--err); }
+/* Without room beside the chat: a chip at its bottom left; a click opens the steps. */
+.pp-panel.compact { top: calc(100cqh - 16px); left: 18px; transform: translateY(-100%); padding: 6px 12px; max-height: calc(100cqh - 60px); max-width: calc(100cqw - 110px); }
+.pp-panel.compact .pp-head { cursor: pointer; flex-direction: row; align-items: baseline; gap: 8px; }
+.pp-panel.compact:not(.open) .pp-body { display: none; }
+.pp-panel.compact.busy:not(.open) { border-color: var(--accent); }
+.pp-panel.compact.open .pp-head { flex-direction: column; align-items: flex-start; gap: 1px; }

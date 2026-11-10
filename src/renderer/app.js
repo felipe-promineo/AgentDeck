@@ -2912,6 +2912,9 @@ async function loadHistory(session) {
     const data = await window.deck.loadTranscript(session.file);
     const transcript = new Transcript(view, data.cwd || session.cwd);
     transcript.onEditPrompt = (index, text, opts) => rewindTo(transcript, index, text, opts);
+    // A session that ran a pipeline shows its steps beside the chat.
+    const ranPipeline = pipelineEnabled() && sessionPipeline(session.id);
+    if (ranPipeline) transcript.attachPipeline(window.Pipeline.steps({ ...state.config.multiAgent, profileId: ranPipeline }));
     // A saved session is drawn all at once, so its milestones show no times.
     transcript.replaying = true;
     for (const m of data.messages) transcript.add(m);
@@ -3792,6 +3795,8 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
         : `${PROVIDER_NAMES[fellBackFrom]} is off, so this agent runs on ${PROVIDER_NAMES[providerOf(choice)]}.`);
     }
     if (folderNote) transcript.note(folderNote);
+    // Its steps beside the chat (a resumed one may have them already).
+    if (agent.pipeline) transcript.attachPipeline(window.Pipeline.steps({ ...state.config.multiAgent, profileId: agent.pipeline }));
     if (agent.pipeline && !resume) transcript.note(`Runs the ${pipelineProfileName(agent.pipeline)} pipeline: ${window.Pipeline.summary({ ...state.config.multiAgent, profileId: agent.pipeline })}.`);
     if (forkFrom) {
       agent.forkedFrom = forkFrom;

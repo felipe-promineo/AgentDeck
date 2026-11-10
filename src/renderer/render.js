@@ -1279,6 +1279,13 @@ class Transcript {
     this.createTurnNav(container);
   }
 
+  // A pipeline agent's steps beside the chat (pipelineprogress.js); `plan`
+  // is Pipeline.steps of the profile it runs. Once per chat.
+  attachPipeline(plan) {
+    if (this.pipe || !plan || !window.PipelineProgress) return;
+    this.pipe = new PipelineProgress(this.scroller, this.root, plan);
+  }
+
   // ---------- which message the output on screen answers ----------
 
   // A bar at the top of the chat with your message for the output on screen,
@@ -1576,6 +1583,7 @@ class Transcript {
     turn.progress.open = true;
     turn.el.append(turn.progress, turn.steps, turn.live, turn.skills, turn.answer);
     this.turn = turn;
+    this.pipe?.turnStart();
     this.append(turn.el);
     return turn;
   }
@@ -1635,6 +1643,7 @@ class Transcript {
   finishTurn(result) {
     const turn = this.turn;
     if (!turn) return;
+    this.pipe?.turnEnd(!!(result && (result.is_error || /^error/.test(result.subtype || ''))));
     this.clearDraft();
     this.turn = null;
     // Names the task's saved Changes card (see restoreChanges).
@@ -1708,6 +1717,9 @@ class Transcript {
     // The last answer before each of your messages is where a rewind to that
     // message continues from (see editPrompt).
     if (msg.type === 'assistant' && msg.uuid) this.lastAssistant = { uuid: msg.uuid, session: msg.session_id || null };
+    // A sub-agent's own messages (the pipeline's steps) are not the
+    // governor's: they do not move the pipeline's progress.
+    this.fromSubagent = !!msg.parent_tool_use_id;
     switch (msg.type) {
       case 'user': return this.addUser(msg.message, msg.tool_use_result, msg.isSynthetic || msg.isMeta);
       case 'assistant': return this.addAssistant(msg.message);
@@ -1765,6 +1777,7 @@ class Transcript {
       return;
     }
     if (/^\s*<task-notification>/.test(first)) {
+      this.pipe?.taskNotification(first);
       this.finishTurn();
       const summary = /<summary>([\s\S]*?)<\/summary>/.exec(first)?.[1]?.trim();
       this.noteIn(this.startTurn(), summary || 'A background task finished.');
@@ -1939,6 +1952,7 @@ class Transcript {
         this.liveStep = 'Thinking…';
       } else if (block.type === 'tool_use') {
         if (block.name === 'Skill') this.addSkill(turn, block.input?.skill);
+        if (!this.fromSubagent) this.pipe?.toolStart(block);
 
         this.noteEvidence(turn, block);
         this.trackTool(turn, block);
@@ -2044,6 +2058,7 @@ class Transcript {
   }
 
   fillTool(block, toolUseResult) {
+    this.pipe?.toolDone(block.tool_use_id, !!block.is_error, resultText(block.content));
     this.turn?.openTools?.delete(block.tool_use_id);
     if (this.turn?.unityWait?.ids.has(block.tool_use_id)) this.turn.unityWait.lastEnd = Date.now();
     const tool = this.tools.get(block.tool_use_id);

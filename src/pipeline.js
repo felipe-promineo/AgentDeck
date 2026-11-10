@@ -742,7 +742,7 @@
     const nodeName = id => (id === TASK ? 'the user\'s task' : id === DONE ? 'Done' : `step ${id} (${typeOf(nodeOf(id)?.type)?.name || '?'})`);
     const lines = [
       'You are the GOVERNOR of a multi-agent pipeline that the user set up in Agent Hub. For each task the user gives you, run the pipeline below:',
-      'hand each agent step to its sub-agent with the Agent tool (also called Task), using exactly the subagent_type named for the step.',
+      'hand each agent step to its sub-agent with the Agent tool (also called Task), using exactly the subagent_type named for the step, in the foreground (not run_in_background): you need its result before the next step.',
       'You coordinate and do not do the steps\' work yourself, except for small fixes between steps.',
       '',
       'The pipeline:',
@@ -801,6 +801,40 @@
     return lines.join('\n');
   }
 
+  // A step's name for people: its type's name, the skill it runs, or the
+  // start of its custom prompt.
+  function stepLabel(c, node) {
+    const t = c.types.find(x => x.id === node.type);
+    if (t?.kind === 'skill' && node.skill) return `Skill ${node.skill}`;
+    const text = node.prompt?.trim();
+    if (t?.kind === 'prompt' && text) return `“${text.split('\n')[0].slice(0, 30)}${text.length > 30 ? '…' : ''}”`;
+    return t?.name || node.type || 'Missing type';
+  }
+
+  // The steps of a pipeline in the order they run, for the chat's progress
+  // panel: { profileName, stages: [[step]], onDemand: [step] }, each step
+  // { id, label, kind, agent, verdict, count, inputs }. `agent` is the
+  // subagent_type the governor starts it with (null: Ask the user, which is
+  // the governor's own question, or a step it skips); `inputs` the steps it
+  // waits for (TASK for the user's task).
+  function steps(cfg) {
+    const c = view(cfg);
+    const info = id => {
+      const node = c.nodes.find(n => n.id === id);
+      const t = c.types.find(x => x.id === node.type);
+      const agent = !t || t.kind === 'ask' ? null
+        : t.kind === 'skill' ? (node.skill ? skillAgentName(t, node.skill) : null)
+          : t.kind === 'prompt' ? (node.prompt.trim() ? subagentName(t) : null)
+            : subagentName(t);
+      return {
+        id, label: stepLabel(c, node), kind: t?.kind || 'agent', agent, verdict: !!t?.verdict, count: node.count,
+        inputs: c.edges.filter(e => e.to === id && !isFail(e)).map(e => e.from),
+      };
+    };
+    const order = stages(c);
+    return { profileName: c.profileName || '', stages: order.map(stage => stage.map(info)), onDemand: order.onDemand.map(info) };
+  }
+
   // A short line for the chat: "Analyst → Planner → Implementer ×2 → Code reviewer (↺ Implementer, 3×)".
   function summary(cfg) {
     const c = view(cfg);
@@ -808,9 +842,7 @@
     const step = id => {
       const node = c.nodes.find(x => x.id === id);
       const back = c.edges.filter(e => e.from === id && isFail(e)).map(e => name(c.nodes.find(x => x.id === e.to)?.type));
-      const kind = c.types.find(t => t.id === node.type)?.kind;
-      const label = kind === 'skill' && node.skill ? `Skill ${node.skill}` : kind === 'prompt' && node.prompt.trim() ? `“${node.prompt.trim().split('\n')[0].slice(0, 30)}${node.prompt.trim().length > 30 ? '…' : ''}”` : name(node.type);
-      return `${label}${node.count > 1 ? ` ×${node.count}` : ''}${back.length ? ` (↺ ${back.join(', ')}, ${node.rounds}×)` : ''}`;
+      return `${stepLabel(c, node)}${node.count > 1 ? ` ×${node.count}` : ''}${back.length ? ` (↺ ${back.join(', ')}, ${node.rounds}×)` : ''}`;
     };
     return stages(c).map(stage => stage.map(step).join(' + ')).join(' → ') || 'no steps';
   }
@@ -890,5 +922,5 @@
   const cleanMcp = list => cleanList(list, MCP_ENTRY);
   const cleanSkills = list => cleanList(list, SKILL_NAME);
 
-  return { pick, PROFILE_ID, TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
+  return { steps, pick, PROFILE_ID, TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
 }));

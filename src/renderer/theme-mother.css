@@ -261,7 +261,7 @@ body::before, body::after, #mu-roll, #mu-noise { border-radius: 34px / 30px !imp
 .settings-card, .palette-modal, .quit-card, .conn-dialog, .changelog-card, .notes-card,
 .usage-main, .context-pop, .model-menu, .hub-settings-menu, .uml-detail, .question-card, .permission,
 .toast, .box-card, .jira-card, .github-card, .slack-card, .cortex-card, .changes, .media-card, .queue, .hub-menu-item, .act-tile, .hub-activity,
-.prompt-pin, .turn-nav-pair, .turn-nav-btn.bottom, .hub-settings-btn, .usage-tab, .followup, .question-option {
+.prompt-pin, .turn-nav-pair, .turn-nav-btn.bottom, .hub-settings-btn, .usage-tab, .followup, .question-option, .pp-panel {
   background: var(--bg) !important; border-color: var(--border) !important;
   box-shadow: 0 0 0 1px var(--border), 0 0 24px rgba(60, 236, 255, 0.08) !important; }
 .settings-title, .palette-label, .quit-title, .conn-dialog-title, .changelog-title, .usage-title, .act-title, .changes-title, .question-title, .box-title {

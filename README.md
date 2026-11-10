@@ -153,6 +153,7 @@ To go back to an earlier version, check out its tag in the stable copy (`git -C 
 | `src/renderer/settings.js` | The Settings screen. |
 | `src/pipeline.js` | The multi-agent pipeline: its built-in agents, the checks on its graph, and the governor's instructions and sub-agents. Loaded by the main process and by the window. |
 | `src/renderer/pipelineeditor.js` | Settings → Multi-agent: the pipeline's graph as cards to drag and connect, and its agent types. |
+| `src/renderer/pipelineprogress.js` | A pipeline agent's steps beside its chat, marked as they run. |
 | `src/renderer/render.js` | Draws each turn: the collapsed steps, the final answer, the Changes card and permission cards. |
 | `src/renderer/app.js` | Window state: the History drawer, switching between the Hub and agents, and the message box. |
 | `src/renderer/styles.css` | All styling. The colors, fonts and sizes are variables at the top of the file. |
@@ -164,6 +165,17 @@ To go back to an earlier version, check out its tag in the stable copy (`git -C 
 Settings → **Multi-agent** sets up a pipeline of agents for implementing tasks, for example understand the requirements → make a plan → implement → review. It is **off by default**: the main switch at the top turns all of it on or off.
 
 While it is on, a **⛓ Pipeline** button sits under the message box in the Hub. It opens a menu: *No pipeline* (a normal agent) or one of your **profiles**, each with its steps; ★ marks the default profile, and ☆ on another one makes it the default. The button then shows the profile's name, and it remembers your last choice. With a profile picked, the new agent is a *governor*. It does not do the work itself. It hands each step to that step's own agent (a Claude Code sub-agent), recaps what came back as a `Milestone:` line (shown in the chat's Progress panel), fixes gaps and contradictions between steps, and passes everything each step needs on to the next one. It is still one agent, one chat and one session in History; resuming it later keeps it a pipeline. Claude only: the button is greyed out while the next agent would start on Codex.
+
+**Where the pipeline is**, in the chat: a small graph of the profile's steps, top to bottom (steps that run at the same time side by side). Each step shows how it stands:
+- ○ not started;
+- turning: running;
+- ✋ waiting for your answer;
+- ✓ done;
+- ↺ sent the work back (`VERDICT: CHANGES`), with *round 2* and so on when a step runs again;
+- ✕ failed;
+- crossed out: not run. Grey means the governor went on without it; red ⊘ means an error stopped the pipeline before it.
+
+The header says how far it is and which step runs (*3/5 · Unity implementer*, *sent back*, *stopped*, *Done · 1 skipped*). It sits in the chat's right margin, or the left one when something wide lies under the right one. Without room beside the chat it folds into a chip at the chat's bottom left, which opens the graph on a click. It follows what the governor does in the chat: each sub-agent it starts, the sub-agent's answer, its questions to you, and the end of each turn. A new task starts the graph over, while a run that goes on after your answer keeps it. A saved pipeline session shows how its last run went.
 
 The editor:
 
