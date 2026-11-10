@@ -3038,7 +3038,7 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-toolbar .pipe-add { width: auto; min-width: 150px; font-weight: 700; color: var(--accent); }
 .pipe-help { flex: 1; min-width: 240px; }
 
-.pipe-canvas { position: relative; overflow: auto; border: 1px solid var(--border); border-radius: 12px; max-height: 560px;
+.pipe-canvas { position: relative; overflow: auto; border: 1px solid var(--border); border-radius: 12px; max-height: 660px;
   background-color: var(--code-bg);
   background-image: radial-gradient(circle, color-mix(in srgb, var(--text-faint) 35%, transparent) 1px, transparent 1.2px);
   background-size: 22px 22px; }
@@ -3050,8 +3050,6 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-line-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
 .pipe-edge:hover .pipe-line { stroke: var(--err); stroke-width: 2.5; }
 .pipe-arrowhead { fill: var(--text-dim); }
-.pipe-loop-line { stroke: var(--accent); stroke-dasharray: 7 6; opacity: 0.9; }
-.pipe-loop-caption { fill: var(--accent); font-size: 11px; font-weight: 700; }
 
 .pipe-node, .pipe-term { position: absolute; z-index: 2; border-radius: 10px; background: var(--bg-panel); border: 1px solid var(--border);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }
@@ -3069,8 +3067,7 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-editor input.pipe-count { width: 46px; padding: 4px 4px 4px 7px; font-size: 12px; }
 .pipe-editor input.pipe-note { width: 100%; padding: 4px 7px; font-size: 12px; }
 .pipe-node.drop-target, .pipe-term.drop-target { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
-.pipe-node.flash, .pipe-term.flash, .pipe-loop.flash { animation: pipe-flash 0.9s ease 2; }
-@keyframes pipe-flash { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 55%, transparent); } }
+.pipe-node.flash, .pipe-term.flash, @keyframes pipe-flash { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 55%, transparent); } }
 
 .pipe-term { width: 112px; height: 44px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; }
 .pipe-term-task { border-color: var(--info); color: var(--info); }
@@ -3088,15 +3085,6 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
   font-size: 11px; font-weight: 900; background: var(--busy); color: var(--accent-text); z-index: 3; cursor: help; }
 .pipe-error > .pipe-badge { background: var(--err); color: #fff; }
 
-.pipe-loop { position: absolute; z-index: 1; border: 2px dashed color-mix(in srgb, var(--accent) 65%, transparent); border-radius: 16px;
-  background: color-mix(in srgb, var(--accent) 5%, transparent); }
-.pipe-loop.off { border-color: var(--border); background: none; }
-.pipe-loop-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 9px 14px; font-size: 12px; }
-.pipe-loop-head input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
-.pipe-loop-head select { width: auto; padding: 3px 6px; font-size: 12px; }
-.pipe-loop-label { font-weight: 800; color: var(--accent); margin-right: 2px; }
-.pipe-loop-text { color: var(--text-dim); }
-.pipe-loop.off .pipe-loop-label { color: var(--text-faint); }
 
 .pipe-problems { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
 .pipe-problem { padding: 4px 10px; border-radius: 7px; background: var(--bg-panel); color: var(--text-dim); }
@@ -3138,7 +3126,6 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-chip.dim { color: var(--text-faint); background: none; border-color: var(--border); font-weight: 600; }
 .pipe-chip.count { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
 .pipe-chip.tokens { color: var(--text-dim); background: var(--code-bg); font-family: var(--mono); font-weight: 500; }
-.pipe-loop-chips { flex-basis: 100%; padding-left: 22px; }
 .pipe-type > summary .pipe-chips { display: inline-flex; }
 
 /* Tokens per request */
@@ -3180,3 +3167,22 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-row .dim { color: var(--text-faint); }
 .pipe-row .pipe-chip { justify-self: start; }
 .pipe-estimate-foot { font-size: 11.5px; }
+
+/* A verdict's way back: the red ✕ dot at a card's bottom and its dashed line under the cards */
+.pipe-port-fail { top: auto; bottom: -8px; right: 16px; cursor: crosshair; border-color: var(--err); background: var(--err); }
+.pipe-port-fail:hover { transform: scale(1.3); }
+.pipe-fail-line { stroke: var(--err); stroke-dasharray: 7 5; }
+.pipe-line.pending.pipe-fail-line { stroke: var(--err); }
+.pipe-arrowhead-fail { fill: var(--err); }
+.pipe-edge.fail:hover .pipe-line { stroke-width: 3; opacity: 0.7; }
+.pipe-fail-caption { fill: var(--err); font-size: 11px; font-weight: 700; pointer-events: none; }
+.pipe-node-fail { display: flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 6px; font-size: 11px;
+  background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--err); }
+.pipe-fail-label { font-weight: 700; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pipe-fail-max { font-weight: 700; }
+.pipe-surface { user-select: none; -webkit-user-select: none; }
+.pipe-surface input { user-select: text; -webkit-user-select: text; }
+.pipe-chip.verdict { color: var(--err); background: color-mix(in srgb, var(--err) 14%, transparent); }
+.pipe-chip.ask { color: #e07ab8; background: color-mix(in srgb, #e07ab8 16%, transparent); }
+.pipe-node.access-ask { border-left: 4px solid #e07ab8; }
+.pipe-node.access-ask .pipe-node-head { background: color-mix(in srgb, #e07ab8 14%, var(--bg-active)); }
