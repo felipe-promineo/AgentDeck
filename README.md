@@ -151,11 +151,28 @@ To go back to an earlier version, check out its tag in the stable copy (`git -C 
 | `src/renderer/diffview.js` | Draws diffs: line numbers, syntax colors, code files first, and the full-window review view. |
 | `src/renderer/boxcard.js` | Turns ╔═╗ text boxes from agents into cards. |
 | `src/renderer/settings.js` | The Settings screen. |
+| `src/pipeline.js` | The multi-agent pipeline: its built-in agents, the checks on its graph, and the governor's instructions and sub-agents. Loaded by the main process and by the window. |
+| `src/renderer/pipelineeditor.js` | Settings → Multi-agent: the pipeline's graph as cards to drag and connect, and its agent types. |
 | `src/renderer/render.js` | Draws each turn: the collapsed steps, the final answer, the Changes card and permission cards. |
 | `src/renderer/app.js` | Window state: the History drawer, switching between the Hub and agents, and the message box. |
 | `src/renderer/styles.css` | All styling. The colors, fonts and sizes are variables at the top of the file. |
 | `scripts/promote.js` | `npm run promote`: moves `dev` to `master` and updates the stable copy. |
 | `scripts/make-app.js` | `npm run make-app`: runs `make-app.sh` on macOS or `make-app-win.ps1` on Windows. |
+
+## Multi-agent pipeline
+
+Settings → **Multi-agent** sets up a pipeline of agents for implementing tasks, for example understand the requirements → make a plan → implement → review. It is **off by default**: the main switch at the top turns all of it on or off.
+
+While it is on, a **⛓ Pipeline** button sits under the message box in the Hub. With it lit, the new agent is a *governor*. It does not do the work itself. It hands each step to that step's own agent (a Claude Code sub-agent), recaps what came back as a `Milestone:` line (shown in the chat's Progress panel), fixes gaps and contradictions between steps, and passes everything each step needs on to the next one. It is still one agent, one chat and one session in History; resuming it later keeps it a pipeline. Claude only: the button is greyed out while the next agent would start on Codex.
+
+The editor:
+
+- **The graph.** *Your task* is on the left, *Done* is on the right, and the agent cards sit between them. Drag a card by its title to move it. Drag from the dot on its right side to another card to connect them, and click a line to remove it. **+ Agent…** adds a card, and × removes one. On each card you pick its agent type, how many agents run the step at the same time (×2 means two at once, each with its own part or angle, merged by the governor), and an optional note for that step. Steps that do not depend on each other run at the same time.
+- **The reviewer box** around the cards reviews the whole result when the graph is through. When the reviewer finds blocking problems it goes back to the step you pick (by default the Implementer) and round again, up to the number of rounds you set. Untick it to run without a review loop.
+- **Warnings** under the graph, and a ! on the card concerned: a card with no input, an output that goes nowhere, a card that is not reached from Your task or does not lead to Done, nothing connected to Done, a circle of connections (go round with the reviewer box instead), a missing agent type, or a review loop without a step to go back to. Click a warning to show its card. You can save with warnings, and the governor works around them.
+- **Agent types**: the app comes with a Requirements analyst, a Planner, an Implementer, a Tester and a Code reviewer. Each has a description, a model (the same as the agent's, or Opus, Sonnet or Haiku), its tools (all, read only, or read + shell) and its instructions. You can change the built-in ones (*Restore its instructions* puts them back) and add your own with **+ New agent type**. **Reset to the default pipeline** puts back the graph and the types.
+
+The setting is `multiAgent` in config.json: `{ enabled, types, nodes, edges, loop }`.
 
 ## Settings
 

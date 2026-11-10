@@ -10,6 +10,7 @@ const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const { randomUUID } = require('crypto');
 const { findClaude, spawnClaude, killTree, childEnv } = require('./platform');
+const pipeline = require('./pipeline');
 
 // Tells every agent that the chat shows images and videos (see media.js and
 // the Markdown rendering in render.js).
@@ -103,9 +104,13 @@ class AgentManager {
 
   // The window may pick the id itself (so it can show the agent's tile before
   // this process has started anything); otherwise a new one is made here.
-  start({ id: wantedId, cwd, resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, title }) {
+  start({ id: wantedId, cwd, resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, title, pipeline: asPipeline }) {
     const config = this.getConfig();
     const id = typeof wantedId === 'string' && /^[\w-]{8,64}$/.test(wantedId) && !this.agents.has(wantedId) ? wantedId : randomUUID();
+    // A pipeline agent (the Pipeline button under the message box) is the
+    // governor: it gets the pipeline's sub-agents and its instructions. Only
+    // while the pipeline is on in Settings; otherwise it is a normal agent.
+    const governed = !!asPipeline && config.multiAgent?.enabled;
     const args = [
       '-p',
       '--input-format', 'stream-json',
@@ -117,8 +122,9 @@ class AgentManager {
       '--permission-prompt-tool', 'stdio',
       // Without this flag the CLI refuses a later switch to bypass mode.
       '--allow-dangerously-skip-permissions',
-      '--append-system-prompt', SYSTEM_PROMPT,
+      '--append-system-prompt', governed ? `${SYSTEM_PROMPT}\n\n${pipeline.governorPrompt(config.multiAgent)}` : SYSTEM_PROMPT,
     ];
+    if (governed) args.push('--agents', JSON.stringify(pipeline.subagents(config.multiAgent)));
     // "auto" is the app's own (automodel.js picks a real model before this);
     // if one ever slips through, Claude Code uses its default.
     if (model && model !== 'default' && model !== 'auto') args.push('--model', model);

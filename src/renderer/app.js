@@ -242,6 +242,7 @@ function ensureDraft() {
       groupId: state.groups.lastGroupId || null,
       choice: defaultChoice(),
       mode: defaultMode(),
+      pipeline: pipelineWanted(),
     };
   }
   if (state.draft.groupId && !state.groups.groups.some(g => g.id === state.draft.groupId)) state.draft.groupId = null;
@@ -266,6 +267,7 @@ function renderDraftButtons() {
   folder.title = (d.folder ? `Folder: ${d.folder}${branch ? `\n${branch.vcs === 'svn' ? 'SVN' : 'Git'} branch: ${branch.name}` : ''}` : 'Pick the folder the agent works in')
     + (autoGame ? `\nAuto game folder: a message about one game in ${homePath(state.config.gamesFolder)} works in that game's folder instead` : '');
   folder.classList.toggle('danger-text', !d.folder);
+  renderPipelineButton();
   const group = state.groups.groups.find(g => g.id === d.groupId);
   $('composer-group').textContent = (group ? '# ' + group.name : '# No category') + ' ▾';
   $('composer-group').title = 'The category the new agent goes into. Category and folder together make its Group.';
@@ -286,6 +288,66 @@ function renderDraftButtons() {
   fork.title = [source ? 'A new agent here continues from this agent: a copy of its conversation when that is short, or a handoff summary of it when it is long.' : '',
     fallback ? `New agents start on ${PROVIDER_NAMES[fallback.provider]} until ${from}'s usage limit resets. Agents already on ${from} wait for it.` : ''].filter(Boolean).join('\n');
 }
+
+// ---------- multi-agent pipeline ----------
+
+// The ⛓ Pipeline button under the message box: the next agent runs the
+// pipeline from Settings → Multi-agent (pipeline.js). It shows only while
+// the pipeline is on in Settings, and it remembers its last position.
+function pipelineEnabled() {
+  return !!state.config?.multiAgent?.enabled;
+}
+
+function pipelineWanted() {
+  try { return localStorage.getItem('pipelineOn') === '1'; } catch { return false; }
+}
+
+// Whether a new agent from this draft is a pipeline (Claude only: the
+// pipeline's sub-agents are Claude Code's).
+function draftPipeline(d) {
+  return pipelineEnabled() && !!d.pipeline && providerOf(startChoice(d.choice)) !== 'codex';
+}
+
+// Saved sessions that ran as a pipeline, so resuming one keeps it.
+function pipelineSessions() {
+  try { return JSON.parse(localStorage.getItem('pipelineSessions') || '{}'); } catch { return {}; }
+}
+
+function rememberPipeline(sessionId) {
+  const all = pipelineSessions();
+  if (all[sessionId]) return;
+  all[sessionId] = Date.now();
+  // The newest 500 are enough.
+  const keep = Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, 500);
+  try { localStorage.setItem('pipelineSessions', JSON.stringify(Object.fromEntries(keep))); } catch { /* not important */ }
+}
+
+function renderPipelineButton() {
+  const button = $('composer-pipeline');
+  const startsAgent = !['agent', 'history', 'branches'].includes(state.current?.kind);
+  button.classList.toggle('hidden', !pipelineEnabled() || !startsAgent);
+  if (!pipelineEnabled()) return;
+  const d = ensureDraft();
+  const codex = providerOf(startChoice(d.choice)) === 'codex';
+  const on = draftPipeline(d);
+  button.classList.toggle('on', on);
+  button.disabled = codex;
+  button.textContent = on ? '⛓ Pipeline on' : '⛓ Pipeline';
+  button.title = codex
+    ? 'The multi-agent pipeline runs on Claude only'
+    : on
+      ? `The new agent is a governor that runs the pipeline:\n${window.Pipeline.summary(state.config.multiAgent)}\nChange it in Settings → Multi-agent. Click to start a normal agent instead.`
+      : 'Run the multi-agent pipeline from Settings → Multi-agent for the new agent';
+}
+
+$('composer-pipeline').onclick = () => {
+  const d = ensureDraft();
+  d.pipeline = !d.pipeline;
+  try { localStorage.setItem('pipelineOn', d.pipeline ? '1' : '0'); } catch { /* not important */ }
+  sfx(d.pipeline ? 'tick' : 'tickDown');
+  renderPipelineButton();
+  $('input').focus();
+};
 
 // The folder menu: recent folders, each with ✕ to remove it from the list,
 // and Choose folder… at the bottom. It opens above the folder button, like
@@ -699,6 +761,7 @@ function show(kind, id) {
   $('composer-folder').classList.toggle('hidden', !startsAgent);
   $('composer-group').classList.toggle('hidden', !startsAgent);
   $('composer-fork').classList.toggle('hidden', !startsAgent);
+  renderPipelineButton();
 
   if (kind === 'agent') {
     const a = state.agents.get(id);
@@ -2597,6 +2660,7 @@ async function restartInNewFolder(agent) {
     model: cliModel(agent),
     effort: cliEffort(agent),
     fastMode: agent.choice?.fastMode,
+    pipeline: agent.pipeline,
     resumeId: from,
     forkSession: true,
   });
@@ -3589,7 +3653,7 @@ async function startFrom(forkFrom, note = flashComposerNote) {
 // note(text) and resolves with any of { prompt, forkFrom, preamble,
 // handoffFrom, cwd, folderNote } to use instead of the ones passed in.
 // folderNote: why the agent works in cwd (Auto game folder), shown in the chat.
-async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId, fromRect, forkFrom, preamble = '', handoffFrom = null, images = [], ticket = null, rewindAt, prepare = null, folderNote = null }) {
+async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId, fromRect, forkFrom, preamble = '', handoffFrom = null, images = [], ticket = null, rewindAt, prepare = null, folderNote = null, pipeline = false }) {
   const title = resume ? resume.session.title : prompt.split('\n')[0].slice(0, 80);
   choice = choice || defaultChoice();
   // An older Codex choice: no model is Auto, a newest model id its family.
@@ -3617,7 +3681,9 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
   transcript.onUpdate = refreshHub;
   const agent = { id, title, cwd, status: 'starting', sessionId: resume?.session.id || null, view, transcript, unread: false, choice, mode: permissionMode,
     // A resumed session stays in its group. A new one goes to the group picked in the form.
-    groupId: resume ? groupOf(resume.session.id) : groupId || null };
+    groupId: resume ? groupOf(resume.session.id) : groupId || null,
+    // A pipeline governor (see renderPipelineButton); a resumed one stays one.
+    pipeline: !!(pipeline || (resume && pipelineSessions()[resume.session.id])) && pipelineEnabled() && providerOf(choice) !== 'codex' };
   state.agents.set(id, agent);
   // Auto: the rules pick a model now, and Haiku's rating comes while Claude
   // Code starts (see settleAuto). A resumed session keeps what Auto picked.
@@ -3650,6 +3716,7 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
         : `${PROVIDER_NAMES[fellBackFrom]} is off, so this agent runs on ${PROVIDER_NAMES[providerOf(choice)]}.`);
     }
     if (folderNote) transcript.note(folderNote);
+    if (agent.pipeline && !resume) transcript.note(`Runs the multi-agent pipeline: ${window.Pipeline.summary(state.config.multiAgent)}.`);
     if (forkFrom) {
       agent.forkedFrom = forkFrom;
       transcript.note(`Continues from "${forkFrom.title}", so it knows what that agent did.`);
@@ -3697,6 +3764,7 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
       model: cliModel(agent),
       effort: cliEffort(agent),
       fastMode: choice.fastMode,
+      pipeline: agent.pipeline,
       ...(rewindAt === undefined
         ? { resumeId: resume?.session.id || forkFrom?.sessionId, forkSession: resume ? !!resume.moved : !!forkFrom }
         : { resumeId: rewindAt?.session || undefined, forkSession: !!rewindAt, resumeSessionAt: rewindAt?.uuid }),
@@ -3984,6 +4052,7 @@ async function rewindTo(transcript, index, text, { undoFiles, files = [] } = {})
       model: cliModel(agent),
       effort: cliEffort(agent),
       fastMode: agent.choice?.fastMode,
+      pipeline: agent.pipeline,
       resumeId: at?.session,
       forkSession: !!at,
       resumeSessionAt: at?.uuid,
@@ -5051,6 +5120,7 @@ window.deck.onSession((id, sessionId) => {
   if (named && !agentNames()[sessionId]) setAgentName(sessionId, named);
   rememberTitle(a);
   rememberNotesSeen(a);
+  if (a.pipeline) rememberPipeline(sessionId);
   // The CLI reports the session id once the session exists. That is when we
   // can save the group, and it also covers a resume that got a new id.
   if (a.groupId && groupOf(sessionId) !== a.groupId) assignGroup(sessionId, a.groupId);
@@ -5179,7 +5249,7 @@ async function sendFromComposer() {
       return { prompt, ...(await startFrom(forkFrom, note)) };
     };
     if (playSounds()) sounds.created();
-    await startAgent({ cwd, prompt: text, permissionMode: d.mode, choice: d.choice, groupId: d.groupId, fromRect, images, ticket, prepare, folderNote: quickGame ? gameNote(quickGame) : null });
+    await startAgent({ cwd, prompt: text, permissionMode: d.mode, choice: d.choice, groupId: d.groupId, fromRect, images, ticket, prepare, folderNote: quickGame ? gameNote(quickGame) : null, pipeline: draftPipeline(d) });
   } else if (state.current.kind === 'agent') {
     const a = state.agents.get(state.current.id);
     if (QUEUE_WHILE.includes(a.status)) {
@@ -5969,6 +6039,7 @@ function showSettings() {
         show('hub');
       }
       renderSettingsButton();
+      renderPipelineButton();
       sfx('approve');
     },
   });

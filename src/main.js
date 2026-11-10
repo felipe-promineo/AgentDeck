@@ -25,6 +25,7 @@ const csharp = require('./csharp');
 const gameFolders = require('./gamefolders');
 const toast = require('./toast');
 const { ReviewPeer } = require('./reviewpeer');
+const pipeline = require('./pipeline');
 
 // The window loads images and videos from disk through media:// (see media.js).
 // "stream" lets video players read a file piece by piece.
@@ -82,6 +83,10 @@ const DEFAULT_CONFIG = {
   githubBranches: false,                // also list your GitHub pull requests and branches (githubbranches.js)
   theme: 'default',                     // default | mother (the retro terminal of Alien)
   curvedScreen: true,                   // the retro theme bends the picture like a tube's glass
+  // The multi-agent pipeline (pipeline.js): off by default. Its agent types,
+  // the graph that connects them and the reviewer loop, as Settings →
+  // Multi-agent edits them.
+  multiAgent: pipeline.defaults(),
 };
 
 let win;
@@ -139,7 +144,7 @@ function getConfig() {
   try {
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     if (!Array.isArray(saved.svnProjects) && typeof saved.svnProject === 'string') saved.svnProjects = [saved.svnProject].filter(Boolean);
-    return { ...DEFAULT_CONFIG, ...saved };
+    return { ...DEFAULT_CONFIG, ...saved, multiAgent: pipeline.normalize(saved.multiAgent) };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
