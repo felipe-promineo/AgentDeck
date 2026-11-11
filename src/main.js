@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Menu, protocol
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
-const { AgentManager, fetchModels, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited } = require('./agents');
+const { AgentManager, measurePipeline, pipelineSnapshot, fetchModels, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited } = require('./agents');
 const { CodexManager, fetchCodexModels, fetchCodexUsage, listCodexThreads, loadCodexThread } = require('./codex');
 const { listSessions, loadTranscript, PROJECTS_DIR } = require('./sessions');
 const git = require('./git');
@@ -25,6 +25,7 @@ const csharp = require('./csharp');
 const gameFolders = require('./gamefolders');
 const toast = require('./toast');
 const { ReviewPeer } = require('./reviewpeer');
+const pipeline = require('./pipeline');
 
 // The window loads images and videos from disk through media:// (see media.js).
 // "stream" lets video players read a file piece by piece.
@@ -82,6 +83,10 @@ const DEFAULT_CONFIG = {
   githubBranches: false,                // also list your GitHub pull requests and branches (githubbranches.js)
   theme: 'default',                     // default | mother (the retro terminal of Alien)
   curvedScreen: true,                   // the retro theme bends the picture like a tube's glass
+  // The multi-agent pipeline (pipeline.js): off by default. Its agent types,
+  // the graph that connects them and the reviewer loop, as Settings →
+  // Multi-agent edits them.
+  multiAgent: pipeline.defaults(),
 };
 
 let win;
@@ -139,7 +144,7 @@ function getConfig() {
   try {
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     if (!Array.isArray(saved.svnProjects) && typeof saved.svnProject === 'string') saved.svnProjects = [saved.svnProject].filter(Boolean);
-    return { ...DEFAULT_CONFIG, ...saved };
+    return { ...DEFAULT_CONFIG, ...saved, multiAgent: pipeline.normalize(saved.multiAgent) };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -210,7 +215,10 @@ function send(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
-const claudeAgents = new AgentManager({ send, getConfig });
+// Pipeline runs (pipelinerun.js) are saved in the settings folder, once the
+// app has set it (see app.setPath below).
+const pipelineRunsDir = () => (app.isReady() ? path.join(app.getPath('userData'), 'pipeline-runs') : null);
+const claudeAgents = new AgentManager({ send, getConfig, runsDir: pipelineRunsDir });
 const codexAgents = new CodexManager({ send, getConfig });
 // The review peer of the whole-window class diagram (reviewpeer.js).
 const reviewPeer = new ReviewPeer({ send, getConfig });
@@ -542,6 +550,10 @@ app.whenReady().then(() => {
     return r.canceled ? null : r.filePaths[0];
   });
   ipcMain.handle('agent:start', (_e, opts) => agents.start(opts));
+  // Settings → Multi-agent: how big the pipeline's requests start (agents.js).
+  ipcMain.handle('pipeline:measure', (_e, multiAgent, folder) => measurePipeline(getConfig(), multiAgent, folder));
+  // Where a pipeline agent's run stands: a running agent's, or a saved session's last run.
+  ipcMain.handle('pipeline:state', (_e, agentId, sessionId) => claudeAgents.pipelineState(agentId) || pipelineSnapshot(pipelineRunsDir(), String(sessionId || '')));
   ipcMain.handle('agent:send', (_e, id, text, images) => agents.sendMessage(id, text, images));
   ipcMain.handle('agent:setModel', (_e, id, choice) => agents.setModel(id, choice));
   let models = null;

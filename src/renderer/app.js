@@ -242,6 +242,7 @@ function ensureDraft() {
       groupId: state.groups.lastGroupId || null,
       choice: defaultChoice(),
       mode: defaultMode(),
+      pipeline: pipelineWanted(),
     };
   }
   if (state.draft.groupId && !state.groups.groups.some(g => g.id === state.draft.groupId)) state.draft.groupId = null;
@@ -266,6 +267,7 @@ function renderDraftButtons() {
   folder.title = (d.folder ? `Folder: ${d.folder}${branch ? `\n${branch.vcs === 'svn' ? 'SVN' : 'Git'} branch: ${branch.name}` : ''}` : 'Pick the folder the agent works in')
     + (autoGame ? `\nAuto game folder: a message about one game in ${homePath(state.config.gamesFolder)} works in that game's folder instead` : '');
   folder.classList.toggle('danger-text', !d.folder);
+  renderPipelineButton();
   const group = state.groups.groups.find(g => g.id === d.groupId);
   $('composer-group').textContent = (group ? '# ' + group.name : '# No category') + ' ▾';
   $('composer-group').title = 'The category the new agent goes into. Category and folder together make its Group.';
@@ -286,6 +288,141 @@ function renderDraftButtons() {
   fork.title = [source ? 'A new agent here continues from this agent: a copy of its conversation when that is short, or a handoff summary of it when it is long.' : '',
     fallback ? `New agents start on ${PROVIDER_NAMES[fallback.provider]} until ${from}'s usage limit resets. Agents already on ${from} wait for it.` : ''].filter(Boolean).join('\n');
 }
+
+// ---------- multi-agent pipeline ----------
+
+// The ⛓ Pipeline button under the message box: the next agent runs one of
+// the pipeline's profiles from Settings → Multi-agent (pipeline.js), picked
+// in the menu the button opens; ★ marks the default profile. It shows only
+// while the pipeline is on in Settings, and it remembers the last choice.
+function pipelineEnabled() {
+  return !!state.config?.multiAgent?.enabled;
+}
+
+const pipelineProfiles = () => state.config?.multiAgent?.profiles || [];
+const defaultPipelineProfile = () => state.config?.multiAgent?.defaultProfile || pipelineProfiles()[0]?.id || '';
+// A profile id that still exists, or the default one.
+const livePipelineProfile = id => (pipelineProfiles().some(p => p.id === id) ? id : defaultPipelineProfile());
+const pipelineProfileName = id => pipelineProfiles().find(p => p.id === livePipelineProfile(id))?.name || 'Pipeline';
+
+// The last choice: '' (a normal agent) or a profile id. Before profiles it
+// was on or off: on is the default profile.
+function pipelineWanted() {
+  try {
+    const saved = localStorage.getItem('pipelineProfile');
+    if (saved !== null) return saved;
+    return localStorage.getItem('pipelineOn') === '1' ? defaultPipelineProfile() : '';
+  } catch { return ''; }
+}
+
+// The profile a new agent from this draft runs, or '' for a normal agent
+// (Claude only: the pipeline's sub-agents are Claude Code's).
+function draftPipeline(d) {
+  return pipelineEnabled() && d.pipeline && providerOf(startChoice(d.choice)) !== 'codex' ? livePipelineProfile(d.pipeline) : '';
+}
+
+// Saved sessions that ran as a pipeline, with their profile, so resuming one
+// keeps it: { sessionId: { at, profile } } (a number before profiles).
+function pipelineSessions() {
+  try { return JSON.parse(localStorage.getItem('pipelineSessions') || '{}'); } catch { return {}; }
+}
+function sessionPipeline(sessionId) {
+  const saved = pipelineSessions()[sessionId];
+  if (!saved) return '';
+  return livePipelineProfile(typeof saved === 'object' ? saved.profile : '');
+}
+
+function rememberPipeline(sessionId, profile) {
+  const all = pipelineSessions();
+  if (all[sessionId]?.profile === profile) return;
+  all[sessionId] = { at: Date.now(), profile };
+  // The newest 500 are enough.
+  const at = v => (typeof v === 'object' ? v.at : v) || 0;
+  const keep = Object.entries(all).sort((a, b) => at(b[1]) - at(a[1])).slice(0, 500);
+  try { localStorage.setItem('pipelineSessions', JSON.stringify(Object.fromEntries(keep))); } catch { /* not important */ }
+}
+
+function renderPipelineButton() {
+  const button = $('composer-pipeline');
+  const startsAgent = !['agent', 'history', 'branches'].includes(state.current?.kind);
+  button.classList.toggle('hidden', !pipelineEnabled() || !startsAgent);
+  if (!pipelineEnabled()) return;
+  const d = ensureDraft();
+  const codex = providerOf(startChoice(d.choice)) === 'codex';
+  const on = draftPipeline(d);
+  button.classList.toggle('on', on);
+  button.disabled = codex;
+  button.textContent = on ? `⛓ ${pipelineProfileName(on)} ▾` : '⛓ Pipeline ▾';
+  button.title = codex
+    ? 'The multi-agent pipeline runs on Claude only'
+    : on
+      ? `The new agent is a governor that runs the ${pipelineProfileName(on)} pipeline:\n${window.Pipeline.summary({ ...state.config.multiAgent, profileId: on })}\nClick to pick another profile or a normal agent. Change them in Settings → Multi-agent.`
+      : 'Pick a pipeline profile from Settings → Multi-agent for the new agent';
+}
+
+// The menu of the ⛓ Pipeline button: a normal agent, or one of the
+// profiles (★ the default one; ☆ on another makes it the default). It opens
+// above the button, like the folder menu.
+function choosePipeline() {
+  const d = ensureDraft();
+  const open = document.querySelector('.pipeline-panel');
+  document.querySelector('.group-panel')?.remove();
+  sfx(open ? 'tickDown' : 'tick');
+  if (open) return; // a second click on the button closes it
+  const panel = el('div', 'group-panel pipeline-panel');
+  const list = el('div', 'group-panel-list');
+  panel.appendChild(list);
+  $('composer-pipeline').parentNode.appendChild(panel);
+  const close = () => {
+    panel.remove();
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const outside = e => { if (!panel.contains(e.target) && e.target !== $('composer-pipeline')) close(); };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const pick = id => {
+    d.pipeline = id;
+    try { localStorage.setItem('pipelineProfile', id); } catch { /* not important */ }
+    sfx(id ? 'select' : 'tickDown');
+    close();
+    renderPipelineButton();
+    $('input').focus();
+  };
+  const render = () => {
+    list.innerHTML = '';
+    const chosen = draftPipeline(d);
+    const none = el('div', 'group-panel-item pipeline-row' + (chosen ? '' : ' selected'));
+    none.append(el('span', 'pipeline-name', 'No pipeline'), el('span', 'pipeline-steps', 'A normal agent'));
+    none.onclick = () => pick('');
+    list.appendChild(none);
+    for (const p of pipelineProfiles()) {
+      const isDefault = p.id === defaultPipelineProfile();
+      const row = el('div', 'group-panel-item pipeline-row' + (p.id === chosen ? ' selected' : ''));
+      const star = el('button', 'pipeline-star' + (isDefault ? ' on' : ''), isDefault ? '★' : '☆');
+      star.type = 'button';
+      star.title = isDefault ? 'The default profile' : 'Make this the default profile';
+      star.onclick = async e => {
+        e.stopPropagation();
+        if (isDefault) return;
+        const multiAgent = { ...state.config.multiAgent, defaultProfile: p.id };
+        const saved = await window.deck.saveConfig({ multiAgent }).catch(() => null);
+        state.config = saved || { ...state.config, multiAgent };
+        sfx('tick');
+        render();
+      };
+      const steps = window.Pipeline.summary({ ...state.config.multiAgent, profileId: p.id });
+      row.title = steps;
+      row.append(star, el('span', 'pipeline-name', p.name), el('span', 'pipeline-steps', steps));
+      row.onclick = () => pick(p.id);
+      list.appendChild(row);
+    }
+  };
+  render();
+  document.addEventListener('mousedown', outside, true);
+  document.addEventListener('keydown', onKey, true);
+}
+
+$('composer-pipeline').onclick = choosePipeline;
 
 // The folder menu: recent folders, each with ✕ to remove it from the list,
 // and Choose folder… at the bottom. It opens above the folder button, like
@@ -699,6 +836,7 @@ function show(kind, id) {
   $('composer-folder').classList.toggle('hidden', !startsAgent);
   $('composer-group').classList.toggle('hidden', !startsAgent);
   $('composer-fork').classList.toggle('hidden', !startsAgent);
+  renderPipelineButton();
 
   if (kind === 'agent') {
     const a = state.agents.get(id);
@@ -2597,6 +2735,7 @@ async function restartInNewFolder(agent) {
     model: cliModel(agent),
     effort: cliEffort(agent),
     fastMode: agent.choice?.fastMode,
+    pipeline: agent.pipeline,
     resumeId: from,
     forkSession: true,
   });
@@ -2773,6 +2912,11 @@ async function loadHistory(session) {
     const data = await window.deck.loadTranscript(session.file);
     const transcript = new Transcript(view, data.cwd || session.cwd);
     transcript.onEditPrompt = (index, text, opts) => rewindTo(transcript, index, text, opts);
+    // A session that ran a pipeline shows its steps beside the chat.
+    const ranPipeline = pipelineEnabled() && sessionPipeline(session.id);
+    if (ranPipeline) transcript.attachPipeline(window.Pipeline.steps({ ...state.config.multiAgent, profileId: ranPipeline }));
+    // Where its last run stopped, as Agent Hub saved it (pipelinerun.js).
+    if (ranPipeline) window.deck.pipelineState(null, session.id).then(snap => transcript.pipe?.setState(snap)).catch(() => {});
     // A saved session is drawn all at once, so its milestones show no times.
     transcript.replaying = true;
     for (const m of data.messages) transcript.add(m);
@@ -3589,7 +3733,7 @@ async function startFrom(forkFrom, note = flashComposerNote) {
 // note(text) and resolves with any of { prompt, forkFrom, preamble,
 // handoffFrom, cwd, folderNote } to use instead of the ones passed in.
 // folderNote: why the agent works in cwd (Auto game folder), shown in the chat.
-async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId, fromRect, forkFrom, preamble = '', handoffFrom = null, images = [], ticket = null, rewindAt, prepare = null, folderNote = null }) {
+async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId, fromRect, forkFrom, preamble = '', handoffFrom = null, images = [], ticket = null, rewindAt, prepare = null, folderNote = null, pipeline = false }) {
   const title = resume ? resume.session.title : prompt.split('\n')[0].slice(0, 80);
   choice = choice || defaultChoice();
   // An older Codex choice: no model is Auto, a newest model id its family.
@@ -3617,7 +3761,10 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
   transcript.onUpdate = refreshHub;
   const agent = { id, title, cwd, status: 'starting', sessionId: resume?.session.id || null, view, transcript, unread: false, choice, mode: permissionMode,
     // A resumed session stays in its group. A new one goes to the group picked in the form.
-    groupId: resume ? groupOf(resume.session.id) : groupId || null };
+    groupId: resume ? groupOf(resume.session.id) : groupId || null,
+    // A pipeline governor: the profile it runs (see renderPipelineButton); a
+    // resumed one stays one, with the profile it had.
+    pipeline: (pipelineEnabled() && providerOf(choice) !== 'codex' && (pipeline || (resume && sessionPipeline(resume.session.id)))) || '' };
   state.agents.set(id, agent);
   // Auto: the rules pick a model now, and Haiku's rating comes while Claude
   // Code starts (see settleAuto). A resumed session keeps what Auto picked.
@@ -3650,6 +3797,9 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
         : `${PROVIDER_NAMES[fellBackFrom]} is off, so this agent runs on ${PROVIDER_NAMES[providerOf(choice)]}.`);
     }
     if (folderNote) transcript.note(folderNote);
+    // Its steps beside the chat (a resumed one may have them already).
+    if (agent.pipeline) transcript.attachPipeline(window.Pipeline.steps({ ...state.config.multiAgent, profileId: agent.pipeline }));
+    if (agent.pipeline && !resume) transcript.note(`Runs the ${pipelineProfileName(agent.pipeline)} pipeline: ${window.Pipeline.summary({ ...state.config.multiAgent, profileId: agent.pipeline })}.`);
     if (forkFrom) {
       agent.forkedFrom = forkFrom;
       transcript.note(`Continues from "${forkFrom.title}", so it knows what that agent did.`);
@@ -3697,6 +3847,7 @@ async function startAgent({ cwd, prompt, permissionMode, choice, resume, groupId
       model: cliModel(agent),
       effort: cliEffort(agent),
       fastMode: choice.fastMode,
+      pipeline: agent.pipeline,
       ...(rewindAt === undefined
         ? { resumeId: resume?.session.id || forkFrom?.sessionId, forkSession: resume ? !!resume.moved : !!forkFrom }
         : { resumeId: rewindAt?.session || undefined, forkSession: !!rewindAt, resumeSessionAt: rewindAt?.uuid }),
@@ -3984,6 +4135,7 @@ async function rewindTo(transcript, index, text, { undoFiles, files = [] } = {})
       model: cliModel(agent),
       effort: cliEffort(agent),
       fastMode: agent.choice?.fastMode,
+      pipeline: agent.pipeline,
       resumeId: at?.session,
       forkSession: !!at,
       resumeSessionAt: at?.uuid,
@@ -5041,6 +5193,9 @@ window.deck.onPermissionCancel((id, requestId) => {
   state.agents.get(id)?.transcript.cancelPermission(requestId);
 });
 
+// A pipeline agent's run changed: its steps beside the chat (pipelineprogress.js).
+window.deck.onPipeline((id, snap) => state.agents.get(id)?.transcript?.pipe?.setState(snap));
+
 window.deck.onSession((id, sessionId) => {
   const a = state.agents.get(id);
   if (!a) return;
@@ -5051,6 +5206,7 @@ window.deck.onSession((id, sessionId) => {
   if (named && !agentNames()[sessionId]) setAgentName(sessionId, named);
   rememberTitle(a);
   rememberNotesSeen(a);
+  if (a.pipeline) rememberPipeline(sessionId, a.pipeline);
   // The CLI reports the session id once the session exists. That is when we
   // can save the group, and it also covers a resume that got a new id.
   if (a.groupId && groupOf(sessionId) !== a.groupId) assignGroup(sessionId, a.groupId);
@@ -5179,7 +5335,7 @@ async function sendFromComposer() {
       return { prompt, ...(await startFrom(forkFrom, note)) };
     };
     if (playSounds()) sounds.created();
-    await startAgent({ cwd, prompt: text, permissionMode: d.mode, choice: d.choice, groupId: d.groupId, fromRect, images, ticket, prepare, folderNote: quickGame ? gameNote(quickGame) : null });
+    await startAgent({ cwd, prompt: text, permissionMode: d.mode, choice: d.choice, groupId: d.groupId, fromRect, images, ticket, prepare, folderNote: quickGame ? gameNote(quickGame) : null, pipeline: draftPipeline(d) });
   } else if (state.current.kind === 'agent') {
     const a = state.agents.get(state.current.id);
     if (QUEUE_WHILE.includes(a.status)) {
@@ -5969,6 +6125,7 @@ function showSettings() {
         show('hub');
       }
       renderSettingsButton();
+      renderPipelineButton();
       sfx('approve');
     },
   });

@@ -300,6 +300,23 @@ function openSettings(config, { onSaved } = {}) {
   const extraArgs = settingsText((config.extraArgs || []).join('\n'), 'One flag or value per line, for example\n--add-dir\nC:\\Some\\Folder');
   const env = settingsText(Object.entries(config.env || {}).map(([k, v]) => `${k}=${v}`).join('\n'), 'One per line: NAME=value');
 
+  // Multi-agent: the main switch, and the pipeline's graph and agent types
+  // (pipelineeditor.js). Off: no Pipeline button, and every agent is a normal one.
+  const multiOn = settingsInput('checkbox', !!config.multiAgent?.enabled);
+  // Its token estimate measures in the folder you work in (lastFolder and
+  // recentFolders are app.js's).
+  const pipeline = pipelineEditor(config.multiAgent, {
+    folder: typeof lastFolder === 'function' ? lastFolder() : config.defaultFolder,
+    folders: typeof recentFolders === 'function' ? recentFolders() : [],
+    home: config.home || '',
+  });
+  const showMulti = () => {
+    pipeline.element.classList.toggle('off', !multiOn.checked);
+    pipeline.element.title = multiOn.checked ? '' : 'Turn on the multi-agent pipeline to use it';
+  };
+  multiOn.addEventListener('change', showMulti);
+  showMulti();
+
   // Settings of a provider that is off are greyed out (see showProviders).
   const providerRows = { claude: [], codex: [] };
   const claudeOnly = row => (providerRows.claude.push(row), row);
@@ -371,6 +388,10 @@ function openSettings(config, { onSaved } = {}) {
       settingsField('Sounds', 'For everything you and the agents do', sounds),
       settingsField('Voice language', `The language you speak to the microphone button next to Send (${IS_MAC ? '⌘⇧Space' : 'Ctrl+Shift+Space'}). ${IS_MAC ? 'macOS' : 'Windows'} turns it into text itself, so nothing is downloaded`, voiceLanguage),
       settingsField('Update pop-up', 'A card on the Hub asks you to update when a new version is out. Off: only the Update button next to the version in the title bar shows it', updatePopup))]],
+    ['multiagent', 'Multi-agent', [
+      section(null,
+        settingsField('Multi-agent pipeline', 'Adds a ⛓ Pipeline button under the message box. With it on, the new agent is a governor: it hands each step below to its own agents (several at once where a card says so), recaps their work, fixes what is missing between steps, and has the reviewer send the result back until it is right. Claude only. Off: every agent is a normal one', multiOn)),
+      section('Pipeline', pipeline.element)]],
     ['branches', 'Branch diff', [section(null,
       settingsField('Projects', `The Branches view lists ${(config.svnServer || 'svn+ssh://svn@tactile.build').replace(/\/+$/, '')}/<project>/branches for each one. Separate them with commas. Empty: every project someone committed to in the last year`, svnProjects),
       settingsField('Branch names', 'Only branches whose names start with one of these. Separate them with commas. Empty: every branch', svnBranchFilter),
@@ -521,6 +542,7 @@ function openSettings(config, { onSaved } = {}) {
       claudePath: claudePath.value.trim(),
       extraArgs: extraArgs.value.split('\n').map(l => l.trim()).filter(Boolean),
       env: envVars,
+      multiAgent: { ...pipeline.value(), enabled: multiOn.checked },
     };
     if (!next.claudeEnabled && !next.codexEnabled) {
       problem.textContent = 'Keep at least one provider on.';

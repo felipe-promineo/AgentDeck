@@ -10,6 +10,8 @@ const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const { randomUUID } = require('crypto');
 const { findClaude, spawnClaude, killTree, childEnv } = require('./platform');
+const pipeline = require('./pipeline');
+const { PipelineEngine, savedSnapshot } = require('./pipelinerun');
 
 // Tells every agent that the chat shows images and videos (see media.js and
 // the Markdown rendering in render.js).
@@ -94,46 +96,70 @@ function compactTokens(value) {
   return n >= 100000 && n <= 1000000 ? n : false;
 }
 
+// Claude Code's arguments for an agent (also used to measure a pipeline's
+// baseline, see measureBaseline, so both see the same context).
+function claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, pipeline: asPipeline, runsDir } = {}) {
+  // A pipeline agent (the Pipeline button under the message box) is the
+  // governor: it gets the pipeline's sub-agents and its instructions. Only
+  // while the pipeline is on in Settings; otherwise it is a normal agent.
+  // `asPipeline` is the profile to run (true: the default one).
+  const governed = !!asPipeline && config.multiAgent?.enabled;
+  const run = governed ? pipeline.pick(config.multiAgent, typeof asPipeline === 'string' ? asPipeline : undefined) : null;
+  const args = [
+    '-p',
+    '--input-format', 'stream-json',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--include-partial-messages',
+    '--permission-mode', permissionMode || config.defaultPermissionMode,
+    // Send permission questions to us over stdout instead of refusing them.
+    '--permission-prompt-tool', 'stdio',
+    // Without this flag the CLI refuses a later switch to bypass mode.
+    '--allow-dangerously-skip-permissions',
+    '--append-system-prompt', governed ? `${SYSTEM_PROMPT}\n\n${pipeline.governorPrompt(run)}` : SYSTEM_PROMPT,
+  ];
+  if (governed) args.push('--agents', JSON.stringify(pipeline.subagents(run)));
+  // The run's files (pipelinerun.js) live in Agent Hub's settings folder:
+  // the governor and its sub-agents read them there.
+  if (governed && runsDir) args.push('--add-dir', runsDir);
+  // "auto" is the app's own (automodel.js picks a real model before this);
+  // if one ever slips through, Claude Code uses its default.
+  if (model && model !== 'default' && model !== 'auto') args.push('--model', model);
+  if (effort) args.push('--effort', effort);
+  if (fastMode) args.push('--settings', JSON.stringify({ fastMode: true }));
+  // Compact the conversation at this size (see autoCompact in main.js). A
+  // value the CLI would refuse is left out, so the agent still starts.
+  const compact = String(config.autoCompact || '').trim().toLowerCase();
+  if (compactTokens(compact) !== false) args.push('--autocompact', compact);
+  if (resumeId) args.push('--resume', resumeId);
+  // A fork starts a new session that begins with a copy of resumeId's conversation.
+  if (resumeId && forkSession) args.push('--fork-session');
+  // Going back to one of your messages: the session up to the answer before it.
+  if (resumeId && typeof resumeSessionAt === 'string' && /^[\w-]{8,64}$/.test(resumeSessionAt)) args.push('--resume-session-at', resumeSessionAt);
+  args.push(...(config.extraArgs || []));
+  return args;
+}
+
 class AgentManager {
-  constructor({ send, getConfig }) {
+  constructor({ send, getConfig, runsDir = () => null }) {
     this.send = send;          // send(channel, ...args) to the window
     this.getConfig = getConfig;
+    this.runsDir = runsDir;    // where pipeline runs are saved (pipelinerun.js)
     this.agents = new Map();
   }
 
   // The window may pick the id itself (so it can show the agent's tile before
   // this process has started anything); otherwise a new one is made here.
-  start({ id: wantedId, cwd, resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, title }) {
+  start({ id: wantedId, cwd, resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, title, pipeline: asPipeline }) {
     const config = this.getConfig();
     const id = typeof wantedId === 'string' && /^[\w-]{8,64}$/.test(wantedId) && !this.agents.has(wantedId) ? wantedId : randomUUID();
-    const args = [
-      '-p',
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--include-partial-messages',
-      '--permission-mode', permissionMode || config.defaultPermissionMode,
-      // Send permission questions to us over stdout instead of refusing them.
-      '--permission-prompt-tool', 'stdio',
-      // Without this flag the CLI refuses a later switch to bypass mode.
-      '--allow-dangerously-skip-permissions',
-      '--append-system-prompt', SYSTEM_PROMPT,
-    ];
-    // "auto" is the app's own (automodel.js picks a real model before this);
-    // if one ever slips through, Claude Code uses its default.
-    if (model && model !== 'default' && model !== 'auto') args.push('--model', model);
-    if (effort) args.push('--effort', effort);
-    if (fastMode) args.push('--settings', JSON.stringify({ fastMode: true }));
-    // Compact the conversation at this size (see autoCompact in main.js). A
-    // value the CLI would refuse is left out, so the agent still starts.
-    const compact = String(config.autoCompact || '').trim().toLowerCase();
-    if (compactTokens(compact) !== false) args.push('--autocompact', compact);
-    if (resumeId) args.push('--resume', resumeId);
-    // A fork starts a new session that begins with a copy of resumeId's conversation.
-    if (resumeId && forkSession) args.push('--fork-session');
-    // Going back to one of your messages: the session up to the answer before it.
-    if (resumeId && typeof resumeSessionAt === 'string' && /^[\w-]{8,64}$/.test(resumeSessionAt)) args.push('--resume-session-at', resumeSessionAt);
-    args.push(...(config.extraArgs || []));
+    // A pipeline governor's run is held here (pipelinerun.js): Claude Code
+    // asks it before and after every step through hooks. A resumed session
+    // goes on with its saved run; a fork with a copy of it. Going back to an
+    // earlier message (resumeSessionAt) starts without one.
+    const governed = !!asPipeline && config.multiAgent?.enabled && !!this.runsDir();
+    const runsDir = governed ? this.runsDir() : null;
+    const args = claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permissionMode, model, effort, fastMode, pipeline: asPipeline, runsDir });
 
     const proc = spawnClaude(config.claudePath, args, {
       cwd,
@@ -145,6 +171,21 @@ class AgentManager {
 
     const agent = { id, proc, cwd, title, status: 'starting', sessionId: forkSession ? null : resumeId || null, stderr: '', pending: new Set() };
     this.agents.set(id, agent);
+    if (governed) {
+      const profile = typeof asPipeline === 'string' ? asPipeline : undefined;
+      agent.engine = new PipelineEngine({
+        runsDir, cwd,
+        // A new run takes the profile as Settings has it then.
+        currentPlan: () => pipeline.plan(pipeline.pick(this.getConfig().multiAgent, profile)),
+        onChange: snap => this.send('agent:pipeline', id, snap),
+      });
+      if (resumeId && !resumeSessionAt) {
+        try { agent.engine.resume(resumeId, { fork: !!forkSession }); } catch { /* starts without a run */ }
+      }
+      if (agent.sessionId) agent.engine.bindSession(agent.sessionId);
+      // The hooks go with "initialize", before your first message.
+      proc.stdin.write(JSON.stringify({ type: 'control_request', request_id: `pipeline-init-${id}`, request: { subtype: 'initialize', hooks: PipelineEngine.hooks() } }) + '\n');
+    }
 
     let buffer = '';
     proc.stdout.on('data', chunk => {
@@ -194,6 +235,7 @@ class AgentManager {
     if (msg.session_id && msg.session_id !== agent.sessionId) {
       agent.sessionId = msg.session_id;
       this.send('agent:session', agent.id, msg.session_id);
+      agent.engine?.bindSession(msg.session_id);
     }
     // The mode can change without us asking, for example when Claude leaves
     // plan mode. The CLI reports the new mode in init and status events.
@@ -225,6 +267,7 @@ class AgentManager {
       }
     }
     if (msg.type === 'result') this.setStatus(agent, msg.is_error ? 'error' : agent.background?.length ? 'background' : 'idle');
+    if (msg.type === 'result') agent.engine?.turnEnded();
     this.send('agent:event', agent.id, msg);
   }
 
@@ -237,8 +280,16 @@ class AgentManager {
       this.send('agent:permission', agent.id, { requestId: msg.request_id, ...msg.request });
       return;
     }
-    // We do not handle other requests (hook callbacks, SDK MCP servers), so we
-    // answer with an error to keep the CLI from waiting for us.
+    // A pipeline governor's hooks: its run decides (pipelinerun.js). An
+    // error in it lets the step go on rather than stopping the agent.
+    if (msg.request?.subtype === 'hook_callback' && agent.engine) {
+      const answer = response => this.writeJson(agent, { type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } });
+      agent.engine.handle(msg.request.callback_id, msg.request.input || {})
+        .then(answer, err => { console.error('pipeline hook', msg.request.callback_id, err); answer({}); });
+      return;
+    }
+    // We do not handle other requests (other hook callbacks, SDK MCP servers),
+    // so we answer with an error to keep the CLI from waiting for us.
     this.writeJson(agent, {
       type: 'control_response',
       response: { subtype: 'error', request_id: msg.request_id, error: `Agent Hub does not handle ${msg.request?.subtype}` },
@@ -256,7 +307,12 @@ class AgentManager {
   }
 
   writeJson(agent, obj) {
-    agent.proc.stdin.write(JSON.stringify(obj) + '\n');
+    if (agent.proc.stdin.writable) agent.proc.stdin.write(JSON.stringify(obj) + '\n');
+  }
+
+  // A pipeline agent's run as the progress panel shows it, or null.
+  pipelineState(id) {
+    return this.agents.get(id)?.engine?.snapshot() || null;
   }
 
   setStatus(agent, status) {
@@ -274,6 +330,8 @@ class AgentManager {
       .filter(i => /^image\/(png|jpeg|gif|webp)$/.test(i?.mediaType) && typeof i.data === 'string')
       .map(i => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType, data: i.data } }));
     const msg = { type: 'user', message: { role: 'user', content: [...pictures, { type: 'text', text }] } };
+    // The task of a run that starts in this turn (the prompt hook has it too).
+    if (agent.engine) agent.engine.lastPrompt = String(text || '');
     agent.proc.stdin.write(JSON.stringify(msg) + '\n');
     this.setStatus(agent, 'working');
   }
@@ -676,4 +734,89 @@ function pickGame(config, question, { task = null } = {}) {
   });
 }
 
-module.exports = { AgentManager, fetchModels, findClaude, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited, compactTokens, SYSTEM_PROMPT, EDIT_PROMPT };
+// ---------- a pipeline's baseline (Settings → Multi-agent) ----------
+
+// What Claude Code would put in a request before any work, in a folder:
+// it starts with these arguments, answers "initialize" and then
+// "get_context_usage" (the numbers of /context). No message is sent, so it
+// costs nothing. Resolves with the usage, or null.
+function contextProbe(config, args, cwd) {
+  return new Promise(resolve => {
+    const proc = spawnClaude(config.claudePath, [...args, '--no-session-persistence'],
+      { cwd, env: childEnv(config.env), stdio: ['pipe', 'pipe', 'ignore'] });
+    helperProcesses.add(proc);
+    let buffer = '';
+    let done = false;
+    const finish = value => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      helperProcesses.delete(proc);
+      killTree(proc);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), 30000);
+    proc.on('error', () => finish(null));
+    proc.on('exit', () => finish(null));
+    const write = obj => { try { proc.stdin.write(JSON.stringify(obj) + '\n'); } catch { finish(null); } };
+    proc.stdout.on('data', chunk => {
+      buffer += chunk.toString('utf8');
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (!line.includes('"control_response"')) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        const id = msg.response?.request_id;
+        if (id === 'init') write({ type: 'control_request', request_id: 'usage', request: { subtype: 'get_context_usage' } });
+        if (id === 'usage') finish(msg.response.subtype === 'success' ? msg.response.response : null);
+      }
+    });
+    write({ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } });
+  });
+}
+
+// The governor of `multiAgent` (the editor's pipeline, saved or not) in
+// `cwd`, measured as it would start, and the tools of each sub-agent tool
+// set. Resolves with { governor: { total, model, categories, memoryFiles,
+// mcpTools }, toolSets: { all, readonly, readshell } } or { error }.
+async function measurePipeline(config, multiAgent, cwd) {
+  if (config.claudeEnabled === false) return { error: 'Claude is off in Settings → Providers.' };
+  if (!cwd || !require('fs').existsSync(cwd)) return { error: 'Pick a folder that exists.' };
+  // `multiAgent` is the editor's profile as one graph: it is the one measured.
+  const governed = { ...config, multiAgent: { ...pipeline.normalize(multiAgent), enabled: true } };
+  const model = config.defaultModel && config.defaultModel !== 'auto' ? config.defaultModel : undefined;
+  const sets = Object.entries(pipeline.TOOL_SETS).filter(([, tools]) => tools);
+  const [usage, ...subsets] = await Promise.all([
+    contextProbe(governed, claudeArgs(governed, { pipeline: true, model }), cwd),
+    // Only the tool definitions count here: no MCP servers, no prompt of ours.
+    ...sets.map(([, tools]) => contextProbe(config, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--tools', tools.join(',')], cwd)),
+  ]);
+  if (!usage) return { error: 'Claude Code did not answer. Is it installed and signed in?' };
+  const category = (u, id) => u?.categories?.find(c => c.id === id)?.tokens || 0;
+  const toolSets = { all: category(usage, 'system_tools') };
+  sets.forEach(([name], i) => { if (subsets[i]) toolSets[name] = category(subsets[i], 'system_tools'); });
+  return {
+    governor: {
+      total: usage.totalTokens || 0,
+      model: usage.model || '',
+      categories: (usage.categories || []).filter(c => c.kind === 'used').map(c => ({ id: c.id, name: c.name, tokens: c.tokens })),
+      deferred: category(usage, 'system_tools_deferred'),
+      memoryFiles: (usage.memoryFiles || []).map(f => ({ path: f.path, type: f.type, tokens: f.tokens })),
+      mcpTools: (usage.mcpTools || []).map(t => ({ name: t.name || t.toolName || '', server: t.serverName || t.server || '', tokens: t.tokens || 0 })),
+      // MCP tools a sub-agent with every tool gets too.
+      mcp: category(usage, 'mcp_tools') || (usage.mcpTools || []).reduce((sum, t) => sum + (t.tokens || 0), 0),
+    },
+    toolSets,
+    folder: cwd,
+    at: Date.now(),
+  };
+}
+
+// A saved session's last pipeline run, as the progress panel shows it.
+function pipelineSnapshot(runsDir, sessionId) {
+  try { return runsDir ? savedSnapshot(runsDir, sessionId) : null; } catch { return null; }
+}
+
+module.exports = { AgentManager, measurePipeline, pipelineSnapshot, fetchModels, findClaude, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited, compactTokens, SYSTEM_PROMPT, EDIT_PROMPT };

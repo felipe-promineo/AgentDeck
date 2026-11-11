@@ -182,3 +182,4 @@ details.change-file > summary:hover { background: #f1ebe3; }
 .hub-health.split .health-seg.codex .health-label, .usage-provider.codex, .item-provider { color: #23809a; }
 .conn-tabs { background: #efe9e1; }
 .conn-tab.on { background: #ffffff; box-shadow: 0 1px 2px rgba(60, 40, 20, 0.18); }
+.pp-panel { background: rgba(255, 255, 255, 0.94); box-shadow: 0 8px 22px -8px rgba(60, 40, 20, 0.28); border-color: #d8cfc3; }
