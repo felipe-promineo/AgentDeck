@@ -804,7 +804,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
             ? 'It has every tool, so it gets every connector. Pick another tool set to give it only some'
             : 'The MCP tools it may use on top of its tool set; nothing else. Names a connector does not have are ignored', mcp),
           settingsField('Skills', 'Loaded into it when it starts, if the project or your setup has a skill of that name (for example unity-cli, testing)', skills),
-          ...(t.builtin ? [] : [settingsField('Gives a verdict', 'Its cards get a ✕ "not right" output that sends the work back to an earlier step. Its answer starts with VERDICT: APPROVE or VERDICT: CHANGES', verdict)]),
+          ...(t.builtin ? [] : [settingsField('Gives a verdict', 'Its cards get a ✕ "not right" output that sends the work back to an earlier step. It ends its answer with a verdict (approve or changes) that Agent Hub reads', verdict)]),
         ]),
         settingsField(ask ? 'What it shows and asks' : 'Instructions', null, prompt),
         actions);

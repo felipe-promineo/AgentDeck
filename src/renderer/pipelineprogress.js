@@ -1,10 +1,13 @@
 // Where a pipeline agent is: a small graph of its profile's steps beside the
 // chat (pipeline.js steps), each one marked as it goes: pending, running,
-// done, sent back ("VERDICT: CHANGES"), failed, waiting for you (Ask the
+// done, sent back (its verdict was "changes"), failed, waiting for you (Ask the
 // user) and not run (the governor skipped it, or the run stopped before it:
 // red when an error stopped it).
 //
-// What happens is read from the governor's own tool calls, as the chat sees
+// What happens comes from the run Agent Hub holds (pipelinerun.js): each
+// change of it arrives as a snapshot (setState), so the panel shows exactly
+// where the run is, rounds and all. A session from before that, with no
+// saved run, is read from the governor's own tool calls, as the chat sees
 // them (Transcript calls the methods below): starting a sub-agent with the
 // Agent tool (its subagent_type names the step), its result, a question to
 // you (AskUserQuestion) and the end of each turn. A sub-agent's own tool
@@ -19,9 +22,9 @@ const PP_STATUS = {
   running: ['', 'Running'],
   waiting: ['✋', 'Waiting for your answer'],
   done: ['✓', 'Done'],
-  changes: ['↺', 'Sent the work back: it said VERDICT: CHANGES'],
+  changes: ['↺', 'Sent the work back: its verdict was changes'],
   failed: ['✕', 'Failed'],
-  notrun: ['–', 'Not run: the governor went on without it'],
+  notrun: ['–', 'Not run: it had nothing to run, or the governor went on without it'],
   blocked: ['⊘', 'Not run: an error stopped the pipeline before it'],
 };
 const PP_SIDE_W = 240;     // the side panel's widest
@@ -81,9 +84,28 @@ class PipelineProgress {
     this.render();
   }
 
-  // ---------- what the governor does ----------
+  // ---------- the run, as Agent Hub holds it ----------
+
+  // snap: PipelineEngine.snapshot(). From the first one on, the governor's
+  // tool calls are no longer read.
+  setState(snap) {
+    if (!snap?.steps || !Object.keys(snap.steps).length) return;
+    this.engine = snap;
+    for (const s of this.steps) {
+      const x = snap.steps[s.id];
+      if (!x) continue;
+      s.status = PP_STATUS[x.status] ? x.status : 'pending';
+      s.round = x.round || 1;
+      s.active = x.active || 0;
+      if (s.status === 'changes') this.last = s.id;
+    }
+    this.render();
+  }
+
+  // ---------- what the governor does (sessions without a saved run) ----------
 
   turnStart() {
+    if (this.engine) return;
     this.turnFresh = true;
     this.ranInTurn = false;
     this.failedInTurn = false;
@@ -91,6 +113,7 @@ class PipelineProgress {
 
   // A tool call of the governor's (not of a sub-agent).
   toolStart(block) {
+    if (this.engine) return;
     const input = block.input || {};
     if ((block.name === 'Agent' || block.name === 'Task') && typeof input.subagent_type === 'string') {
       this.stepStart(s => s.agent === input.subagent_type, block.id, !!input.run_in_background);
@@ -141,6 +164,7 @@ class PipelineProgress {
 
   // The result of one of the governor's tool calls.
   toolDone(toolId, isError, text) {
+    if (this.engine) return;
     const call = this.calls.get(toolId);
     if (!call) return;
     const step = this.byId.get(call.step);
@@ -165,6 +189,7 @@ class PipelineProgress {
   // A background task finished: the background step it names (or the only
   // one running) is done.
   taskNotification(text) {
+    if (this.engine) return;
     const background = [...this.calls].filter(([, c]) => c.background);
     if (!background.length) return;
     const named = background.find(([id]) => text.includes(id)) || (background.length === 1 ? background[0] : null);
@@ -177,7 +202,7 @@ class PipelineProgress {
   // ones it did not reach are not run (blocked, when an error stopped it).
   // A background step still running carries on.
   turnEnd(isError) {
-    if (!this.ranInTurn) return;
+    if (this.engine || !this.ranInTurn) return;
     if ([...this.calls.values()].some(c => c.background)) return this.render();
     for (const s of this.steps) {
       if (s.status === 'running' || s.status === 'waiting') {
@@ -216,7 +241,8 @@ class PipelineProgress {
       const [mark, what] = PP_STATUS[s.status];
       node.className = `pp-node pp-${s.status}`;
       node.querySelector('.pp-mark').textContent = mark;
-      node.querySelector('.pp-round').textContent = s.round > 1 ? `round ${s.round}` : s.count > 1 && s.open.size > 1 ? `×${s.open.size}` : '';
+      const many = this.engine ? s.active : s.open.size;
+      node.querySelector('.pp-round').textContent = s.round > 1 ? `round ${s.round}` : s.count > 1 && many > 1 ? `×${many}` : '';
       node.title = `${s.label}: ${what}${s.round > 1 ? ` (round ${s.round})` : ''}`;
     }
     const main = this.steps.filter(s => !this.plan.onDemand.some(d => d.id === s.id));
@@ -225,12 +251,17 @@ class PipelineProgress {
     const failed = this.steps.some(s => s.status === 'failed' || s.status === 'blocked');
     const skipped = main.filter(s => s.status === 'notrun').length;
     const of = `${finished}/${main.length}`;
-    this.status.textContent = now.length ? `${finished + 1}/${main.length} · ${now.map(s => s.label).join(' + ')}`
+    const run = this.engine;
+    const issues = run?.issues ? ` · ${run.issues} open` : '';
+    this.status.textContent = run && !now.length && run.status === 'done' ? `Done${skipped ? ` · ${skipped} not run` : ''}${issues}`
+      : run && !now.length && run.status === 'paused' && this.byId.get(this.last)?.status !== 'changes' ? `${of} · paused`
+        : now.length ? `${finished + 1}/${main.length} · ${now.map(s => s.label).join(' + ')}`
       : failed ? `${of} · stopped`
         // The last step to answer sent the work back: the governor goes back.
         : this.byId.get(this.last)?.status === 'changes' ? `${of} · sent back`
           : finished === main.length ? `Done${skipped ? ` · ${skipped} skipped` : ''}`
             : finished ? of : 'Not started';
+    this.panel.title = run ? `The run's files: ${run.folder}` : '';
     this.panel.classList.toggle('busy', !!now.length);
     this.panel.classList.toggle('stopped', !now.length && failed);
     this.place();

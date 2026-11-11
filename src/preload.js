@@ -133,6 +133,7 @@ contextBridge.exposeInMainWorld('deck', {
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   startAgent: opts => ipcRenderer.invoke('agent:start', opts),
   measurePipeline: (multiAgent, folder) => ipcRenderer.invoke('pipeline:measure', multiAgent, folder),
+  pipelineState: (agentId, sessionId) => ipcRenderer.invoke('pipeline:state', agentId, sessionId),
   sendMessage: (id, text, images) => ipcRenderer.invoke('agent:send', id, text, images),
   // Where a dropped file is on disk (Electron no longer puts it on the File).
   photoshopPicture: (file, maxSide) => ipcRenderer.invoke('media:photoshop', file, maxSide),
@@ -163,6 +164,8 @@ contextBridge.exposeInMainWorld('deck', {
   onEvent: fn => on('agent:event', fn),
   onStatus: fn => on('agent:status', fn),
   onSession: fn => on('agent:session', fn),
+  // A pipeline agent's run changed (pipelinerun.js): where each step stands.
+  onPipeline: fn => on('agent:pipeline', fn),
   onModel: fn => on('agent:model', fn),
   onPermission: fn => on('agent:permission', fn),
   onPermissionCancel: fn => on('agent:permissionCancel', fn),

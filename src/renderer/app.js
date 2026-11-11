@@ -2915,6 +2915,8 @@ async function loadHistory(session) {
     // A session that ran a pipeline shows its steps beside the chat.
     const ranPipeline = pipelineEnabled() && sessionPipeline(session.id);
     if (ranPipeline) transcript.attachPipeline(window.Pipeline.steps({ ...state.config.multiAgent, profileId: ranPipeline }));
+    // Where its last run stopped, as Agent Hub saved it (pipelinerun.js).
+    if (ranPipeline) window.deck.pipelineState(null, session.id).then(snap => transcript.pipe?.setState(snap)).catch(() => {});
     // A saved session is drawn all at once, so its milestones show no times.
     transcript.replaying = true;
     for (const m of data.messages) transcript.add(m);
@@ -5190,6 +5192,9 @@ window.deck.onNotificationOpen(id => {
 window.deck.onPermissionCancel((id, requestId) => {
   state.agents.get(id)?.transcript.cancelPermission(requestId);
 });
+
+// A pipeline agent's run changed: its steps beside the chat (pipelineprogress.js).
+window.deck.onPipeline((id, snap) => state.agents.get(id)?.transcript?.pipe?.setState(snap));
 
 window.deck.onSession((id, sessionId) => {
   const a = state.agents.get(id);

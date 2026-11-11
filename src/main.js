@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Menu, protocol
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
-const { AgentManager, measurePipeline, fetchModels, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited } = require('./agents');
+const { AgentManager, measurePipeline, pipelineSnapshot, fetchModels, summarizeTitle, rateTask, pickGame, mergeNotes, suggestFollowUps, fetchUsage, setProviderLimited } = require('./agents');
 const { CodexManager, fetchCodexModels, fetchCodexUsage, listCodexThreads, loadCodexThread } = require('./codex');
 const { listSessions, loadTranscript, PROJECTS_DIR } = require('./sessions');
 const git = require('./git');
@@ -215,7 +215,10 @@ function send(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
-const claudeAgents = new AgentManager({ send, getConfig });
+// Pipeline runs (pipelinerun.js) are saved in the settings folder, once the
+// app has set it (see app.setPath below).
+const pipelineRunsDir = () => (app.isReady() ? path.join(app.getPath('userData'), 'pipeline-runs') : null);
+const claudeAgents = new AgentManager({ send, getConfig, runsDir: pipelineRunsDir });
 const codexAgents = new CodexManager({ send, getConfig });
 // The review peer of the whole-window class diagram (reviewpeer.js).
 const reviewPeer = new ReviewPeer({ send, getConfig });
@@ -549,6 +552,8 @@ app.whenReady().then(() => {
   ipcMain.handle('agent:start', (_e, opts) => agents.start(opts));
   // Settings → Multi-agent: how big the pipeline's requests start (agents.js).
   ipcMain.handle('pipeline:measure', (_e, multiAgent, folder) => measurePipeline(getConfig(), multiAgent, folder));
+  // Where a pipeline agent's run stands: a running agent's, or a saved session's last run.
+  ipcMain.handle('pipeline:state', (_e, agentId, sessionId) => claudeAgents.pipelineState(agentId) || pipelineSnapshot(pipelineRunsDir(), String(sessionId || '')));
   ipcMain.handle('agent:send', (_e, id, text, images) => agents.sendMessage(id, text, images));
   ipcMain.handle('agent:setModel', (_e, id, choice) => agents.setModel(id, choice));
   let models = null;

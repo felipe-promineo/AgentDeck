@@ -639,7 +639,7 @@
     for (const n of c.nodes) {
       const t = typeOf(n.type);
       if (!t) continue;
-      if (n.count > 1 && t.kind !== 'ask' && t.tools === 'all') out.push({ level: 'info', node: n.id, text: `${n.count} ${t.name} agents run at the same time and can change files: the governor gives each its own part of the work.` });
+      if (n.count > 1 && t.kind !== 'ask' && (t.tools === 'all' || t.tools === 'edit')) out.push({ level: 'info', node: n.id, text: `${n.count} ${t.name} agents run at the same time and can change files: the governor gives each its own part of the work. In a git folder each one works in a worktree of its own, and Agent Hub merges their changes back; elsewhere (SVN) they share the folder.` });
       if (t.kind === 'skill' && !n.skill) out.push({ level: 'warning', node: n.id, text: `${label(n)} has no skill picked: pick one on its card, or the governor skips it.` });
       if (t.kind === 'prompt' && !n.prompt.trim()) out.push({ level: 'warning', node: n.id, text: `${label(n)} has no instructions: type what it should do on its card, or the governor skips it.` });
             if (t.kind !== 'ask' && t.tools === 'all' && t.mcp.length) out.push({ level: 'info', node: n.id, text: `${t.name} has every tool, so it already gets every connector: its connector list adds nothing. Pick a smaller tool set to give it only those.` });
@@ -702,6 +702,40 @@
   const subagentName = type => `pipeline-${slug(type.id)}`;
   const skillAgentName = (type, skill) => `pipeline-${slug(type.id)}-${slug(skill)}`;
   const VERDICT_LINE = 'Start your answer with exactly one line: "VERDICT: APPROVE" when the work is right, or "VERDICT: CHANGES" when something must change, then say what must change and why.';
+  // The verdict Agent Hub reads (parseVerdict): a JSON block at the end of
+  // the answer. The VERDICT: line is only the fallback.
+  const VERDICT_FORMAT = [
+    'End your answer with your verdict as a JSON block in a ```json fence, in exactly this shape:',
+    '{"verdict": "approve" or "changes", "blocking": [{"file": "path", "line": 12, "problem": "what is wrong", "fix": "what to do"}], "minor": [the same shape]}.',
+    '"blocking" lists what must change before the work is right; "minor" what could be better. Say "changes" when "blocking" has anything in it, "approve" when it is empty.',
+    'Agent Hub reads this block to decide whether the work goes back, so write it even when everything is right.',
+  ].join(' ');
+
+  // A verdict step's answer read: { verdict: 'approve' | 'changes', blocking:
+  // [{ file, line, problem, fix }], minor: [...], source: 'json' | 'line' },
+  // or null when it has none. The last ```json block with a "verdict" wins; a
+  // "changes" verdict, or anything blocking, is "changes". Without a block,
+  // the first "VERDICT: APPROVE | CHANGES" line counts, with no list.
+  function parseVerdict(text) {
+    const s = String(text || '');
+    const items = list => (Array.isArray(list) ? list : []).map(x => {
+      if (typeof x === 'string' && x.trim()) return { file: '', line: null, problem: x.trim(), fix: '' };
+      if (!x || typeof x !== 'object' || typeof x.problem !== 'string' || !x.problem.trim()) return null;
+      const line = Number(x.line);
+      return { file: typeof x.file === 'string' ? x.file : '', line: x.line != null && x.line !== '' && Number.isFinite(line) ? Math.round(line) : null, problem: x.problem.trim(), fix: typeof x.fix === 'string' ? x.fix.trim() : '' };
+    }).filter(Boolean);
+    const blocks = [...s.matchAll(/```[ \t]*(?:json)?[^\n]*\n([\s\S]*?)```/gi)].map(m => m[1]).reverse();
+    for (const block of blocks) {
+      let j;
+      try { j = JSON.parse(block); } catch { continue; }
+      const said = String(j?.verdict || '').trim().toLowerCase();
+      if (said !== 'approve' && said !== 'changes') continue;
+      const blocking = items(j.blocking);
+      return { verdict: said === 'changes' || blocking.length ? 'changes' : 'approve', blocking, minor: items(j.minor), source: 'json' };
+    }
+    const line = /^[\s>*_#]*VERDICT:\s*\**\s*(APPROVE|CHANGES)\b/im.exec(s);
+    return line ? { verdict: line[1].toLowerCase(), blocking: [], minor: [], source: 'line' } : null;
+  }
 
   // Claude Code's --agents value: one sub-agent per type the graph uses
   // ("Ask the user" is the governor itself, not a sub-agent).
@@ -722,6 +756,7 @@
       }
       let prompt = t.prompt || `You are the ${t.name} of a multi-agent pipeline.`;
       if (t.verdict && !/VERDICT:/.test(prompt)) prompt += ' ' + VERDICT_LINE;
+      if (t.verdict && !/"verdict"/.test(prompt)) prompt += ' ' + VERDICT_FORMAT;
       out[subagentName(t)] = subagentDef(t, prompt, t.description || t.name);
     }
     return out;
@@ -751,8 +786,12 @@
     const nodeName = id => (id === TASK ? 'the user\'s task' : id === DONE ? 'Done' : `step ${id} (${typeOf(nodeOf(id)?.type)?.name || '?'})`);
     const lines = [
       'You are the GOVERNOR of a multi-agent pipeline that the user set up in Agent Hub. For each task the user gives you, run the pipeline below:',
-      'hand each agent step to its sub-agent with the Agent tool (also called Task), using exactly the subagent_type named for the step, in the foreground (not run_in_background): you need its result before the next step.',
+      'hand each agent step to its sub-agent with the Agent tool (also called Task), using exactly the subagent_type named for the step. Start the call\'s description with the step\'s id, for example "Step n3: implement the plan".',
       'You coordinate and do not do the steps\' work yourself, except for small fixes between steps.',
+      '',
+      'Agent Hub runs the pipeline with you, in code: it checks every step you start and refuses one that is out of order (the refusal says what comes next: follow it),',
+      'runs each step in the foreground, gives each sub-agent its inputs as files and saves every answer to a file, reads each verdict, counts the rounds,',
+      'and after each step tells you what comes next. Its notes start with "Agent Hub pipeline:". The run is saved after every step, so after an error, a restart or a resumed session it goes on from where it stopped.',
       '',
       'The pipeline:',
     ];
@@ -780,9 +819,9 @@
         + `.${what} Input: ${inputs.join(' and ') || 'only what a step sends back to it'}. Its output goes to ${outputs.join(' and ') || 'nothing'}.${note}`;
       if (t.verdict) {
         line += back.length
-          ? ` It gives a verdict: on "VERDICT: APPROVE" go on to ${outputs.join(' and ') || 'Done'}; on "VERDICT: CHANGES" (blocking problems), send its findings back to ${back.join(' or ')} and run the pipeline again from there, through this step again.`
-            + ` Do this at most ${node.rounds} time${node.rounds === 1 ? '' : 's'} for this step; when it is still not right after that, go on and list the problems that are left for the user.`
-          : ' It gives a verdict: on "VERDICT: CHANGES", fix the blocking problems yourself (or with the step that fits), then go on.';
+          ? ` It gives a verdict (Agent Hub reads it): on approve go on to ${outputs.join(' and ') || 'Done'}; on changes (blocking problems) the work goes back to ${back.join(' or ')} with its findings, and the pipeline runs again from there, through this step again.`
+            + ` At most ${node.rounds} time${node.rounds === 1 ? '' : 's'} for this step; when it is still not right after that, go on and list the problems that are left for the user.`
+          : ' It gives a verdict: on changes, fix the blocking problems yourself (or with the step that fits), then go on.';
       }
       return line;
     };
@@ -799,12 +838,15 @@
     lines.push(`The result of the pipeline is the output of ${finals.join(' and ') || 'the last step'}.`);
     lines.push('',
       'How to run it:',
-      '- Each sub-agent starts with no memory of this conversation: give it the user\'s task word for word, plus everything it needs from earlier steps (the full outputs it takes as input, not just a summary), and the folder you work in.',
+      '- Each sub-agent starts with no memory of this conversation. Agent Hub adds the paths of its input files to the prompt you write (the task, the outputs of the steps before it, the findings to fix), and the sub-agent reads them in full.',
+      '  So do not paste earlier outputs into the prompt: write what is specific to this call, such as the part of the plan for one of several agents at once, your corrections between steps, or what the user said.',
+      '- Steps that change files and run at the same time each work in a git worktree of their own; Agent Hub merges each one\'s changes back into the folder when it finishes, and tells you about conflicts. Resolve those before the next step.',
       '- After each step, write a short recap for the user, as one line that starts with "Milestone:" (for example "Milestone: 2 of 4, plan ready: 5 changes in 3 files").',
       '- Check every output before passing it on. When something is missing, wrong or contradicts an earlier step, fix it yourself if it is small, or send it back to the same sub-agent with what to change. When parallel agents disagree, decide and say why.',
       '- When work goes back to an earlier step, say so in a Milestone line with the round (for example "Milestone: review round 2 of 3, back to the implementer: 2 blocking problems").',
-      '- When the task is only a question or a trivial change, you may skip agent steps that add nothing; say which ones you skipped. Never skip an "Ask the user" step, a step that runs a skill or a step with the user\'s own instructions.',
-      '- If a sub-agent asks the user something, ask the user yourself and pass the answer on.',
+      '- When the user\'s message is only a question, you may answer it without the pipeline. Once you start the first step, every step runs: Agent Hub does not let you skip one. Starting a first step again starts the pipeline over, as a new task.',
+      '- When you stop before the pipeline is done, Agent Hub reminds you once what is next; stopping again pauses the run, and it goes on from there in a later turn.',
+      '- If a sub-agent asks the user something, ask the user yourself and pass the answer on (stop to ask: the run pauses and goes on after their answer).',
       '- Your final message: what was done, what the reviews said, what is left open. Follow the rest of your instructions for it.',
     );
     return lines.join('\n');
@@ -842,6 +884,52 @@
     };
     const order = stages(c);
     return { profileName: c.profileName || '', stages: order.map(stage => stage.map(info)), onDemand: order.onDemand.map(info) };
+  }
+
+  // What Agent Hub runs (pipelinerun.js): the graph of one profile, frozen
+  // when a run starts. { profileId, profileName, stages: [[id]], onDemand:
+  // [id], first: [id], nodes: [{ id, label, kind, type, agent, verdict,
+  // count, rounds, inputs, outputs, back, skip, canEdit, isolate }] }.
+  // `inputs` holds TASK, `outputs` may hold DONE; `back` are the ✕ targets;
+  // `skip` a step with nothing to run (no skill picked, no instructions, a
+  // missing type); `isolate` a step that changes files while another one
+  // does too (several agents at once, or a parallel step that edits), so
+  // each of its agents works in a git worktree of its own. `first`: the
+  // steps that start the pipeline (only the task, or first steps that are
+  // stops or skipped, before them).
+  function plan(cfg) {
+    const c = view(cfg);
+    const order = stages(c);
+    const info = steps(c);
+    const all = [...info.stages.flat(), ...info.onDemand];
+    const nodes = all.map(s => {
+      const node = c.nodes.find(n => n.id === s.id);
+      const t = c.types.find(x => x.id === node.type);
+      return {
+        id: s.id, label: s.label, kind: s.kind, type: node.type, agent: s.agent, verdict: s.verdict, count: node.count, rounds: node.rounds,
+        inputs: s.inputs,
+        outputs: c.edges.filter(e => e.from === s.id && !isFail(e)).map(e => e.to),
+        back: c.edges.filter(e => e.from === s.id && isFail(e)).map(e => e.to),
+        skip: s.kind !== 'ask' && !s.agent,
+        canEdit: !!t && t.kind !== 'ask' && (t.tools === 'all' || t.tools === 'edit'),
+        isolate: false,
+      };
+    });
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    for (const stage of order) {
+      const editing = stage.map(id => byId.get(id)).filter(n => n && n.canEdit && !n.skip);
+      for (const n of editing) n.isolate = n.count > 1 || editing.length > 1;
+    }
+    const first = new Set();
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const n of nodes) {
+        if (first.has(n.id) || !n.inputs.length) continue;
+        if (n.inputs.every(i => i === TASK || (first.has(i) && (byId.get(i).kind === 'ask' || byId.get(i).skip)))) { first.add(n.id); grew = true; }
+      }
+    }
+    return { profileId: c.profileId || '', profileName: c.profileName || '', stages: order.map(s => [...s]), onDemand: [...order.onDemand], first: [...first], nodes };
   }
 
   // A short line for the chat: "Analyst → Planner → Implementer ×2 → Code reviewer (↺ Implementer, 3×)".
@@ -931,5 +1019,5 @@
   const cleanMcp = list => cleanList(list, MCP_ENTRY);
   const cleanSkills = list => cleanList(list, SKILL_NAME);
 
-  return { steps, pick, PROFILE_ID, TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
+  return { steps, plan, parseVerdict, VERDICT_FORMAT, pick, PROFILE_ID, TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
 }));
