@@ -176,6 +176,10 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       chip('✋ Waits for you', 'ask', 'The governor stops here, shows you where things stand and asks you; the pipeline goes on when you answer');
       return row;
     }
+    if (P.byGovernor(t)) {
+      chip('🧭 The governor does it', 'gov', 'Not a sub-agent: the governor does this step itself, with its own model, effort, tools and connectors, in the folder');
+      return row;
+    }
     if (t.tools !== 'all') chip(...ACCESS[t.tools]);
     if (t.tools !== 'all') {
       for (const [name, which] of Object.entries(P.connectorsOf(t))) {
@@ -191,7 +195,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     if (tokens) chip(`${estimateNow.measured ? '' : '≈'}${fmt(tokens)} / request`, 'tokens', 'The context each of its requests starts with: its instructions, its tools and the instruction files (see Tokens per request below)').dataset.type = t.id;
     return row;
   };
-  const accessClass = t => (t?.kind === 'ask' ? 'access-ask' : `access-${(ACCESS[t?.tools] || ACCESS.all)[1]}`);
+  const accessClass = t => (t?.kind === 'ask' ? 'access-ask' : P.byGovernor(t) ? 'access-gov' : `access-${(ACCESS[t?.tools] || ACCESS.all)[1]}`);
 
   const newId = (prefix, taken) => { let i = 1; while (taken.has(`${prefix}${i}`)) i++; return `${prefix}${i}`; };
 
@@ -321,11 +325,11 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
       n.type = v;
       // A step that no longer gives a verdict loses its ✕ connections.
       if (!typeOf(v)?.verdict) cfg.edges = cfg.edges.filter(e => !(e.from === n.id && P.isFail(e)));
-      if (typeOf(v)?.kind === 'ask') n.count = 1;
+      if (typeOf(v)?.kind === 'ask' || P.byGovernor(typeOf(v))) n.count = 1;
       render();
     }));
-    // Asking you is the governor itself: it never runs twice at once.
-    if (t?.kind !== 'ask') row.append(el('span', 'pipe-times', '×'), countInput(n.count, v => { n.count = v; render(); }, 'How many agents run this step at the same time'));
+    // Asking you, a skill and a custom prompt are the governor itself: never twice at once.
+    if (t?.kind !== 'ask' && !P.byGovernor(t)) row.append(el('span', 'pipe-times', '×'), countInput(n.count, v => { n.count = v; render(); }, 'How many agents run this step at the same time'));
     body.appendChild(row);
     // Use a skill: which of your skills; Custom prompt: what the step does.
     if (t?.kind === 'skill') body.appendChild(skillSelect(n));
@@ -792,11 +796,12 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
         actions.appendChild(del);
       }
       const ask = t.kind === 'ask';
+      const own = ask || P.byGovernor(t);
       item.append(
         settingsField('Name', null, name),
         settingsField('Description', 'The governor reads this to know what the agent is for', desc),
         ...(t.builtin ? [] : [settingsField('Kind', 'Ask the user: the governor stops, shows you where things stand and waits for your answer or approval', kind)]),
-        ...(ask ? [] : [
+        ...(own ? [] : [
           settingsField('Model', 'Same as the agent: the model the pipeline agent runs on', model),
           settingsField('Effort', 'How hard it thinks. Higher: better on hard steps (planning, review), slower and more tokens', effort),
           settingsField('Tools', 'Read only: it can look but not change files. Read + shell: it can run commands too. Edit + shell: it can change files, with only the connectors below. All tools: everything the pipeline agent has, every connector included', tools),
@@ -806,7 +811,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
           settingsField('Skills', 'Loaded into it when it starts, if the project or your setup has a skill of that name (for example unity-cli, testing)', skills),
           ...(t.builtin ? [] : [settingsField('Gives a verdict', 'Its cards get a ✕ "not right" output that sends the work back to an earlier step. It ends its answer with a verdict (approve or changes) that Agent Hub reads', verdict)]),
         ]),
-        settingsField(ask ? 'What it shows and asks' : 'Instructions', null, prompt),
+        settingsField(ask ? 'What it shows and asks' : own ? 'What the governor does for it' : 'Instructions', own && !ask ? 'Not a sub-agent: the governor does these steps itself, on its own model, effort and tools. This is added to what the card says' : null, prompt),
         actions);
       typesBox.appendChild(item);
     }
@@ -897,7 +902,7 @@ function pipelineEditor(saved, { folder = '', folders = [], home = '' } = {}) {
     head.appendChild(status);
     estimateBox.appendChild(head);
 
-    const sub = Object.entries(e.perType).filter(([id]) => typeOf(id)?.kind !== 'ask' && cfg.nodes.some(n => n.type === id));
+    const sub = Object.entries(e.perType).filter(([id]) => typeOf(id)?.kind !== 'ask' && !P.byGovernor(typeOf(id)) && cfg.nodes.some(n => n.type === id));
     const biggest = sub.reduce((max, [, v]) => Math.max(max, v.total), 0);
     const tiles = el('div', 'pipe-stats');
     const approx = e.measured ? '' : '≈';

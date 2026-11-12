@@ -20,6 +20,11 @@
 //   (pipelineworktree.js), merged back into the folder when each finishes.
 // - Checkpoints: the run's state is saved after every change, by session,
 //   so a resumed session goes on from where it stopped.
+// - Steps the governor does itself (Use a skill, Custom prompt) have no
+//   Agent call to watch: the governor marks them with two tools of Agent
+//   Hub's own (start_step, finish_step), served in-process over the same
+//   control channel (an "sdk" MCP server, see mcp()). The same order rules
+//   apply, and finish_step's answer is saved like a sub-agent's.
 //
 // The state, saved in <runs>/<run id>/state.json: { id, sessionId,
 // profileId, profileName, plan (Pipeline.plan, frozen at the start), task,
@@ -39,6 +44,9 @@ const TASK = Pipeline.TASK;
 const DONE = Pipeline.DONE;
 const NOTE = 'Agent Hub pipeline:';
 const FINISHED = new Set(['done', 'skipped']);
+const STEP_TOOLS = Pipeline.STEP_TOOLS;
+// The call key of a step the governor does itself (one at a time per step).
+const selfCall = id => `self:${id}`;
 
 // Where each run is kept, and which run belongs to which session.
 class RunStore {
@@ -215,6 +223,11 @@ class PipelineEngine {
     return ids;
   }
 
+  // Steps the governor is doing itself right now.
+  runningSelf() {
+    return this.run ? this.runningIds().filter(id => this.node(id)?.self && this.run.calls[selfCall(id)]) : [];
+  }
+
   runningIds() {
     return this.run ? this.run.plan.nodes.filter(n => ['running', 'waiting'].includes(this.step(n.id).status)).map(n => n.id) : [];
   }
@@ -282,7 +295,9 @@ class PipelineEngine {
   static hooks() {
     return {
       // Read: a step reading its input files is not asked about (see preTool).
-      PreToolUse: [{ matcher: 'Agent|Task|AskUserQuestion|Read', hookCallbackIds: ['pipeline-pre'] }],
+      // Skill: whether a Use a skill step loaded its skill. Agent Hub's own
+      // step tools are allowed without asking.
+      PreToolUse: [{ matcher: `Agent|Task|AskUserQuestion|Read|Skill|mcp__${Pipeline.STEP_SERVER}__.*`, hookCallbackIds: ['pipeline-pre'] }],
       PostToolUse: [{ matcher: 'Agent|Task|AskUserQuestion', hookCallbackIds: ['pipeline-post'] }],
       PostToolUseFailure: [{ matcher: 'Agent|Task|AskUserQuestion', hookCallbackIds: ['pipeline-failed'] }],
       SubagentStart: [{ hookCallbackIds: ['pipeline-subagent-start'] }],
@@ -320,6 +335,17 @@ class PipelineEngine {
     // The run's own files (outside the agent's folder, so Claude Code would
     // ask you each time): reading them is allowed. Nothing else changes.
     if (tool === 'Read') return this.isRunFile(input.file_path) ? allow(input) : {};
+    if (tool === STEP_TOOLS.start || tool === STEP_TOOLS.finish) return allow(input);
+    if (tool === 'Skill') {
+      // A Use a skill step the governor runs now loaded its skill.
+      const name = String(input.skill || input.command || '').replace(/^\//, '');
+      const node = this.run && this.runningIds().map(id => this.node(id)).find(n => n.self && n.kind === 'skill' && skillMatches(n, name));
+      if (node) {
+        this.step(node.id).skillLoaded = true;
+        this.save();
+      }
+      return {};
+    }
     if (tool === 'AskUserQuestion') {
       const ask = this.next().map(id => this.node(id)).find(n => n?.kind === 'ask' && this.step(n.id).status === 'pending');
       if (ask) {
@@ -352,6 +378,8 @@ class PipelineEngine {
     if (this.run?.status === 'done' && sb?.optional && pick(this.run.plan).some(n => sb.targets.includes(n.id))) this.run.status = 'running';
     if (this.active()) {
       const candidates = pick(this.run.plan);
+      const mine = this.runningSelf();
+      if (mine.length && candidates.length) return { deny: `finish ${mine.map(id => this.label(id)).join(' and ')} first: you are doing it yourself; call ${STEP_TOOLS.finish} with its answer.` };
       const open = this.next();
       const node = candidates.find(n => open.includes(n.id));
       if (node) return this.start(node, toolId);
@@ -389,6 +417,8 @@ class PipelineEngine {
 
   // "Next: step n3 (Implementer), subagent_type "pipeline-implementer"."
   whatNext(open = this.next()) {
+    const mine = this.runningSelf();
+    if (mine.length) return `Finish ${mine.map(id => this.label(id)).join(' and ')}, which you are doing yourself, with ${STEP_TOOLS.finish}.`;
     if (!open.length) {
       if (this.runningIds().length) return `Wait for ${this.runningIds().map(id => this.label(id)).join(' and ')}.`;
       return 'Every step is done: write your final message.';
@@ -397,6 +427,7 @@ class PipelineEngine {
     const steps = open.map(id => {
       const n = this.node(id);
       if (n.kind === 'ask') return `${this.label(id)}: stop and ask the user (AskUserQuestion)`;
+      if (n.self) return `${this.label(id)}: do it yourself (${STEP_TOOLS.start} with step "${id}", then ${STEP_TOOLS.finish})`;
       const s = this.step(id);
       const more = s.status === 'running' ? n.count - s.started : n.count;
       return `${this.label(id)}, subagent_type "${n.agent}"${more > 1 ? `, ${more} agents at once (one message, each with its own part)` : ''}`;
@@ -672,6 +703,15 @@ class PipelineEngine {
   // words (no question card) waits for your next message.
   stop({ stop_hook_active: again }) {
     if (!this.active()) return {};
+    // A step the governor does itself is not finished: once it is reminded;
+    // stopping again leaves it open (it may need the user), and it goes on
+    // in the next turn.
+    const mine = this.runningSelf();
+    if (mine.length) {
+      if (again || this.blockedStop) return {};
+      this.blockedStop = true;
+      return { decision: 'block', reason: `${NOTE} ${this.whatNext()} If the step needs something from the user first, stop again: it stays open, and you finish it after their answer.` };
+    }
     const open = this.next();
     const ask = open.map(id => this.node(id)).find(n => n?.kind === 'ask' && this.step(n.id).status === 'pending');
     if (ask) {
@@ -697,7 +737,7 @@ class PipelineEngine {
     if (!this.run) return;
     let changed = false;
     for (const [id, call] of Object.entries(this.run.calls)) {
-      if (call.ask || call.agentId) continue;
+      if (call.ask || call.agentId || call.self) continue;
       delete this.run.calls[id];
       const s = this.step(call.node);
       s.started = Math.max(s.finished, s.started - 1);
@@ -710,6 +750,106 @@ class PipelineEngine {
       changed = true;
     }
     if (changed) this.save();
+  }
+
+  // ---------- steps the governor does itself ----------
+
+  // Agent Hub's in-process MCP server (agents.js passes Claude Code's
+  // "mcp_message" requests here): JSON-RPC in, JSON-RPC out.
+  async mcp(message = {}) {
+    const { id, method, params = {} } = message;
+    const reply = result => ({ jsonrpc: '2.0', id: id ?? 0, result });
+    if (method === 'initialize') {
+      return reply({ protocolVersion: params.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: Pipeline.STEP_SERVER, version: '1' } });
+    }
+    if (method === 'tools/list') return reply({ tools: STEP_TOOL_DEFS });
+    if (method === 'tools/call') {
+      const args = params.arguments || {};
+      let text;
+      let isError = false;
+      try {
+        const out = params.name === 'start_step' ? await this.startSelf(String(args.step || ''))
+          : params.name === 'finish_step' ? await this.finishSelf(String(args.step || ''), String(args.answer || ''))
+            : { error: `Unknown tool ${params.name}.` };
+        text = out.error ? `${NOTE} ${out.error}` : out.text;
+        isError = !!out.error;
+      } catch (err) {
+        text = `${NOTE} ${String(err.message || err).slice(0, 300)}`;
+        isError = true;
+      }
+      return reply({ content: [{ type: 'text', text }], isError });
+    }
+    if (id == null) return reply({});   // a notification
+    return { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } };
+  }
+
+  // start_step: the governor starts a step it does itself. The same rules
+  // as a sub-agent's step: in order, never one that is done (except a first
+  // step after a new message, which starts a new run).
+  async startSelf(stepId) {
+    const pickSelf = plan => plan.nodes.filter(n => n.id === stepId);
+    const notMine = n => `${this.label(n.id)} is not a step you do yourself: ${n.kind === 'ask' ? 'ask the user with AskUserQuestion' : `start it with the Agent tool, subagent_type "${n.agent}"`}.`;
+    const sb = this.run?.sendBack;
+    if (this.run?.status === 'done' && sb?.optional && sb.targets.includes(stepId)) this.run.status = 'running';
+    if (this.active()) {
+      const node = pickSelf(this.run.plan)[0];
+      if (!node) return { error: `There is no step "${stepId}". ${this.whatNext()}` };
+      if (!node.self) return { error: notMine(node) };
+      if (this.run.calls[selfCall(node.id)]) return { text: `${NOTE} ${this.label(node.id)} is already started: do it, then call ${STEP_TOOLS.finish}.\n${this.selfBrief(node)}` };
+      const mine = this.runningSelf();
+      if (mine.length) return { error: `Finish ${mine.map(id => this.label(id)).join(' and ')} with ${STEP_TOOLS.finish} first.` };
+      if (this.next().includes(node.id)) return { text: await this.beginSelf(node) };
+      if (this.run.plan.first.includes(node.id) && this.step(node.id).status !== 'pending' && !this.run.sendBack && this.promptSinceStep) {
+        this.newRun(this.lastPrompt);
+        return { text: await this.beginSelf(this.node(node.id)) };
+      }
+      return { error: this.refusal([node]) };
+    }
+    const plan = this.currentPlan();
+    const node = pickSelf(plan)[0];
+    if (!node) return { error: `There is no step "${stepId}" in the pipeline.` };
+    if (!node.self) return { error: notMine(node) };
+    if (!plan.first.includes(node.id)) return { error: `no pipeline run is going on, and ${node.label} is not a first step.` };
+    this.newRun(this.lastPrompt);
+    return { text: await this.beginSelf(this.node(node.id)) };
+  }
+
+  async beginSelf(node) {
+    const { addendum } = await this.start(node, selfCall(node.id));
+    this.run.calls[selfCall(node.id)].self = true;
+    this.step(node.id).skillLoaded = false;
+    this.save();
+    const brief = addendum.replace(/^\s+/, '').replace(/\nAgent Hub saves your final answer[^\n]*/, '\nDo not write to that folder.');
+    return `${brief}\n${this.selfBrief(node)}`;
+  }
+
+  // What the governor does for the step, again where it reads it.
+  selfBrief(node) {
+    const card = node.kind === 'skill'
+      ? `Load the skill "${skillOf(node)}" with the Skill tool now and follow it on the task and these inputs.`
+      : 'Follow the user\'s instructions for this step (in your system prompt, between the STEP INSTRUCTIONS markers) on the task and these inputs.';
+    return `You do this step yourself, in the folder. ${card} When it is done, call ${STEP_TOOLS.finish} with step "${node.id}" and the step's complete answer (what you did, what it produced or where, what you could not do): that answer is what the next steps get.`;
+  }
+
+  // finish_step: the step's answer, saved like a sub-agent's.
+  async finishSelf(stepId, answer) {
+    const call = this.run?.calls[selfCall(stepId)];
+    if (!call) {
+      const node = this.run && this.node(stepId);
+      return { error: node ? `${this.label(stepId)} was not started: call ${STEP_TOOLS.start} first. ${this.whatNext()}` : `There is no step "${stepId}" running.` };
+    }
+    const node = this.node(stepId);
+    const s = this.step(stepId);
+    if (!answer.trim()) return { error: 'The answer is empty: give the step\'s complete answer, the next steps only get that.' };
+    // A skill step that never loaded its skill is asked once to do so.
+    if (node.kind === 'skill' && !s.skillLoaded && !s.skillReminded) {
+      s.skillReminded = true;
+      this.save();
+      return { error: `${this.label(stepId)} runs the skill "${skillOf(node)}", but it was not loaded. Load it with the Skill tool and follow it, then call ${STEP_TOOLS.finish} again. (Calling it again as it is counts the step as done.)` };
+    }
+    this.blockedStop = false;
+    delete s.skillReminded;
+    return { text: await this.finish(selfCall(stepId), answer) };
   }
 
   // ---------- for the window ----------
@@ -734,6 +874,33 @@ class PipelineEngine {
     return { runId: r.id, profileId: r.profileId, profileName: r.profileName, status: r.status, folder: this.dir(), issues: r.issues.length, steps };
   }
 }
+
+// The skill a Use a skill step runs (a plugin's may be "plugin:skill").
+const skillOf = node => String(node.skill || '');
+const skillMatches = (node, name) => {
+  const want = skillOf(node);
+  return !!name && (name === want || name.split(':').pop() === want.split(':').pop());
+};
+
+const STEP_TOOL_DEFS = [
+  {
+    name: 'start_step',
+    description: 'Multi-agent pipeline: start a step you do yourself (Use a skill or Custom prompt). Agent Hub checks it may start now and answers with its input files.',
+    inputSchema: { type: 'object', properties: { step: { type: 'string', description: 'The step\'s id, for example "n4"' } }, required: ['step'] },
+  },
+  {
+    name: 'finish_step',
+    description: 'Multi-agent pipeline: finish a step you started with start_step. Agent Hub saves the answer for the next steps and says what comes next.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        step: { type: 'string', description: 'The step\'s id' },
+        answer: { type: 'string', description: 'The step\'s complete answer: what you did, what it produced (or where), what you could not do' },
+      },
+      required: ['step', 'answer'],
+    },
+  },
+];
 
 const deny = reason => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 const allow = updatedInput => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput } });

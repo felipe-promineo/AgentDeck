@@ -3203,6 +3203,9 @@ button.uml-peer-chip:hover { background: color-mix(in srgb, var(--chip, var(--ac
 .pipe-chip.ask { color: #e07ab8; background: color-mix(in srgb, #e07ab8 16%, transparent); }
 .pipe-node.access-ask { border-left: 4px solid #e07ab8; }
 .pipe-node.access-ask .pipe-node-head { background: color-mix(in srgb, #e07ab8 14%, var(--bg-active)); }
+.pipe-chip.gov { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.pipe-node.access-gov { border-left: 4px solid var(--accent); }
+.pipe-node.access-gov .pipe-node-head { background: color-mix(in srgb, var(--accent) 12%, var(--bg-active)); }
 
 /* 🧹 Tidy up, in the canvas's top right corner */
 .pipe-canvas-wrap { position: relative; }

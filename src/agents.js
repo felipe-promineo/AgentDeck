@@ -122,6 +122,10 @@ function claudeArgs(config, { resumeId, forkSession, resumeSessionAt, permission
   // The run's files (pipelinerun.js) live in Agent Hub's settings folder:
   // the governor and its sub-agents read them there.
   if (governed && runsDir) args.push('--add-dir', runsDir);
+  // Agent Hub's own tools for the steps the governor does itself (Use a
+  // skill, Custom prompt): an in-process server, answered over stdin/stdout
+  // (see handleControlRequest). Only where a run is held (not when measuring).
+  if (governed && runsDir) args.push('--mcp-config', JSON.stringify({ mcpServers: { [pipeline.STEP_SERVER]: { type: 'sdk', name: pipeline.STEP_SERVER } } }));
   // "auto" is the app's own (automodel.js picks a real model before this);
   // if one ever slips through, Claude Code uses its default.
   if (model && model !== 'default' && model !== 'auto') args.push('--model', model);
@@ -286,6 +290,13 @@ class AgentManager {
       const answer = response => this.writeJson(agent, { type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } });
       agent.engine.handle(msg.request.callback_id, msg.request.input || {})
         .then(answer, err => { console.error('pipeline hook', msg.request.callback_id, err); answer({}); });
+      return;
+    }
+    // The governor's step tools (pipelinerun.js mcp()).
+    if (msg.request?.subtype === 'mcp_message' && msg.request.server_name === pipeline.STEP_SERVER && agent.engine) {
+      const answer = mcpResponse => this.writeJson(agent, { type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: { mcp_response: mcpResponse } } });
+      agent.engine.mcp(msg.request.message || {})
+        .then(answer, err => answer({ jsonrpc: '2.0', id: msg.request.message?.id ?? 0, error: { code: -32603, message: String(err.message || err) } }));
       return;
     }
     // We do not handle other requests (other hook callbacks, SDK MCP servers),

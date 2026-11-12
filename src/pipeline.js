@@ -92,8 +92,8 @@
   // decide (planners, reviewers) run on Opus at high effort, implementers on
   // Opus at medium (they follow a plan), and the analysts and testers, which
   // mostly read and run things, on Sonnet at medium. Ask the user, Use a skill
-  // and Custom prompt stay with the agent's: the first is the governor itself,
-  // the other two do whatever their card says.
+  // and Custom prompt are not sub-agents: the governor does them itself, on
+  // its own model, effort and tools (see byGovernor).
   const BUILTIN_TYPES = [
     {
       id: 'analyst',
@@ -189,8 +189,8 @@
         'Do nothing else until the user replies.',
       ].join(' '),
     },
-    // A step that runs one of your skills (its card picks which). Each skill
-    // used becomes a sub-agent of its own with that skill loaded.
+    // A step that runs one of your skills (its card picks which). The
+    // governor does it itself: it loads the skill and follows it.
     {
       id: 'use-skill',
       kind: 'skill',
@@ -200,12 +200,12 @@
       model: 'inherit',
       tools: 'all',
       prompt: [
-        'You are a step of a multi-agent pipeline that runs one skill. The skill is loaded into you: follow it on the task and the inputs you are given.',
-        'Stay inside what the skill and the task ask for. Answer with what you did, what the skill produced (or where), and anything you could not do.',
+        'Load the skill with the Skill tool and follow it on the task and the step\'s inputs.',
+        'Stay inside what the skill and the task ask for. The step\'s answer: what you did, what the skill produced (or where), and anything you could not do.',
       ].join(' '),
     },
-    // A step that does what its card says: the text typed on the card is its
-    // instructions, passed word for word.
+    // A step that does what its card says: the governor follows the text
+    // typed on the card itself, word for word.
     {
       id: 'custom-prompt',
       kind: 'prompt',
@@ -215,8 +215,8 @@
       model: 'inherit',
       tools: 'all',
       prompt: [
-        'You are a step of a multi-agent pipeline. The governor gives you this step\'s instructions, written by the user, word for word, with the task and the inputs from earlier steps.',
-        'Do exactly what the instructions say, and only that. Answer with what you did and what you found or produced, and anything you could not do.',
+        'Follow the instructions the user wrote on the card, on the task and the step\'s inputs.',
+        'Do exactly what they say, and only that. The step\'s answer: what you did, what you found or produced, and anything you could not do.',
       ].join(' '),
     },
 
@@ -480,6 +480,9 @@
 
   const slug = text => String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
   const isFail = e => e.kind === 'fail';
+  // Steps the governor does itself instead of a sub-agent: Use a skill and
+  // Custom prompt. (Ask the user is the governor too, but it is a stop.)
+  const byGovernor = t => t?.kind === 'skill' || t?.kind === 'prompt';
 
   // A saved setting that is missing parts (an older version, edited by hand)
   // gets them from the defaults; built-in types it does not have come back.
@@ -518,8 +521,9 @@
       skill: SKILL_NAME.test(String(n.skill || '')) ? String(n.skill) : '', prompt: String(n.prompt || ''),
       rounds: Math.max(1, Math.min(10, Math.round(Number(n.rounds) || 3))),
     })) : d.nodes;
-    // One "Ask the user" is the governor itself: it never runs twice at once.
-    for (const n of nodes) if (typeOf(n.type)?.kind === 'ask') n.count = 1;
+    // Ask the user, Use a skill and Custom prompt are the governor itself:
+    // they never run twice at once.
+    for (const n of nodes) if (typeOf(n.type)?.kind === 'ask' || byGovernor(typeOf(n.type))) n.count = 1;
     let rawEdges = Array.isArray(s.edges) ? s.edges : d.edges;
     // The first version had a reviewer box around the graph (loop): it
     // becomes a reviewer node before Done that sends the work back.
@@ -700,7 +704,10 @@
   }
 
   const subagentName = type => `pipeline-${slug(type.id)}`;
-  const skillAgentName = (type, skill) => `pipeline-${slug(type.id)}-${slug(skill)}`;
+  // The tools Agent Hub gives the governor (an in-process MCP server, see
+  // pipelinerun.js) to mark a step it does itself.
+  const STEP_SERVER = 'agenthub';
+  const STEP_TOOLS = { start: `mcp__${STEP_SERVER}__start_step`, finish: `mcp__${STEP_SERVER}__finish_step` };
   const VERDICT_LINE = 'Start your answer with exactly one line: "VERDICT: APPROVE" when the work is right, or "VERDICT: CHANGES" when something must change, then say what must change and why.';
   // The verdict Agent Hub reads (parseVerdict): a JSON block at the end of
   // the answer. The VERDICT: line is only the fallback.
@@ -738,22 +745,14 @@
   }
 
   // Claude Code's --agents value: one sub-agent per type the graph uses
-  // ("Ask the user" is the governor itself, not a sub-agent).
+  // (Ask the user, Use a skill and Custom prompt are the governor itself,
+  // not sub-agents).
   function subagents(cfg) {
     const c = view(cfg);
     const used = new Set(c.nodes.map(n => n.type));
     const out = {};
     for (const t of c.types) {
-      if (!used.has(t.id) || t.kind === 'ask') continue;
-      // Use a skill: one sub-agent per skill its cards pick, with the skill loaded.
-      if (t.kind === 'skill') {
-        for (const skill of new Set(c.nodes.filter(n => n.type === t.id && n.skill).map(n => n.skill))) {
-          const def = subagentDef(t, `${t.prompt} The skill is "${skill}".`, `Runs the skill ${skill}.`);
-          def.skills = [...new Set([...t.skills, skill])];
-          out[skillAgentName(t, skill)] = def;
-        }
-        continue;
-      }
+      if (!used.has(t.id) || t.kind === 'ask' || byGovernor(t)) continue;
       let prompt = t.prompt || `You are the ${t.name} of a multi-agent pipeline.`;
       if (t.verdict && !/VERDICT:/.test(prompt)) prompt += ' ' + VERDICT_LINE;
       if (t.verdict && !/"verdict"/.test(prompt)) prompt += ' ' + VERDICT_FORMAT;
@@ -787,7 +786,7 @@
     const lines = [
       'You are the GOVERNOR of a multi-agent pipeline that the user set up in Agent Hub. For each task the user gives you, run the pipeline below:',
       'hand each agent step to its sub-agent with the Agent tool (also called Task), using exactly the subagent_type named for the step. Start the call\'s description with the step\'s id, for example "Step n3: implement the plan".',
-      'You coordinate and do not do the steps\' work yourself, except for small fixes between steps.',
+      'You coordinate and do not do the sub-agents\' work yourself, except for small fixes between steps. Steps marked YOURSELF are yours to do: there is no sub-agent for them.',
       '',
       'Agent Hub runs the pipeline with you, in code: it checks every step you start and refuses one that is out of order (the refusal says what comes next: follow it),',
       'runs each step in the foreground, gives each sub-agent its inputs as files and saves every answer to a file, reads each verdict, counts the rounds,',
@@ -811,12 +810,15 @@
       }
       if (t.kind === 'skill' && !node.skill) return `- ${nodeName(id)}: no skill picked for it; skip it, pass its inputs on to ${outputs.join(' and ') || 'Done'} and say so.`;
       if (t.kind === 'prompt' && !node.prompt.trim()) return `- ${nodeName(id)}: it has no instructions; skip it, pass its inputs on to ${outputs.join(' and ') || 'Done'} and say so.`;
-      const agentName = t.kind === 'skill' ? skillAgentName(t, node.skill) : subagentName(t);
-      const what = t.kind === 'skill' ? ` It runs the skill "${node.skill}".`
-        : t.kind === 'prompt' ? ` Give it these instructions from the user word for word, between the markers, with its inputs: <<<STEP INSTRUCTIONS\n${node.prompt.trim()}\nSTEP INSTRUCTIONS>>>`
-          : '';
-      let line = `- ${nodeName(id)}: subagent_type "${agentName}"${node.count > 1 ? `, ${node.count} agents at once (start them in one message, each with its own part or angle, then merge their outputs)` : ''}`
-        + `.${what} Input: ${inputs.join(' and ') || 'only what a step sends back to it'}. Its output goes to ${outputs.join(' and ') || 'nothing'}.${note}`;
+      if (byGovernor(t)) {
+        const what = t.kind === 'skill' ? `Run the skill "${node.skill}": load it with the Skill tool and follow it.`
+          : `Follow these instructions from the user, word for word, between the markers: <<<STEP INSTRUCTIONS\n${node.prompt.trim()}\nSTEP INSTRUCTIONS>>>`;
+        return `- ${nodeName(id)}: YOURSELF, not a sub-agent. ${what} ${t.prompt}${note}`
+          + ` Input: ${inputs.join(' and ') || 'only what a step sends back to it'}. Its output goes to ${outputs.join(' and ') || 'nothing'}.`
+          + ` Start it with ${STEP_TOOLS.start} (step "${id}") and end it with ${STEP_TOOLS.finish} (step "${id}" and the step's complete answer).`;
+      }
+      let line = `- ${nodeName(id)}: subagent_type "${subagentName(t)}"${node.count > 1 ? `, ${node.count} agents at once (start them in one message, each with its own part or angle, then merge their outputs)` : ''}`
+        + `. Input: ${inputs.join(' and ') || 'only what a step sends back to it'}. Its output goes to ${outputs.join(' and ') || 'nothing'}.${note}`;
       if (t.verdict) {
         line += back.length
           ? ` It gives a verdict (Agent Hub reads it): on approve go on to ${outputs.join(' and ') || 'Done'}; on changes (blocking problems) the work goes back to ${back.join(' or ')} with its findings, and the pipeline runs again from there, through this step again.`
@@ -838,6 +840,7 @@
     lines.push(`The result of the pipeline is the output of ${finals.join(' and ') || 'the last step'}.`);
     lines.push('',
       'How to run it:',
+      `- A step you do yourself: call ${STEP_TOOLS.start} first (it tells you the step's input files: read them), do the step, then call ${STEP_TOOLS.finish} with its complete answer, which Agent Hub saves for the next steps. Do not start another step in between.`,
       '- Each sub-agent starts with no memory of this conversation. Agent Hub adds the paths of its input files to the prompt you write (the task, the outputs of the steps before it, the findings to fix), and the sub-agent reads them in full.',
       '  So do not paste earlier outputs into the prompt: write what is specific to this call, such as the part of the plan for one of several agents at once, your corrections between steps, or what the user said.',
       '- Steps that change files and run at the same time each work in a git worktree of their own; Agent Hub merges each one\'s changes back into the folder when it finishes, and tells you about conflicts. Resolve those before the next step.',
@@ -864,21 +867,21 @@
 
   // The steps of a pipeline in the order they run, for the chat's progress
   // panel: { profileName, stages: [[step]], onDemand: [step] }, each step
-  // { id, label, kind, agent, verdict, count, inputs }. `agent` is the
+  // { id, label, kind, agent, self, verdict, count, inputs }. `agent` is the
   // subagent_type the governor starts it with (null: Ask the user, which is
-  // the governor's own question, or a step it skips); `inputs` the steps it
-  // waits for (TASK for the user's task).
+  // the governor's own question, a step the governor does itself, or a step
+  // it skips); `self` a Use a skill or Custom prompt step with something to
+  // do, which the governor does itself; `inputs` the steps it waits for
+  // (TASK for the user's task).
   function steps(cfg) {
     const c = view(cfg);
     const info = id => {
       const node = c.nodes.find(n => n.id === id);
       const t = c.types.find(x => x.id === node.type);
-      const agent = !t || t.kind === 'ask' ? null
-        : t.kind === 'skill' ? (node.skill ? skillAgentName(t, node.skill) : null)
-          : t.kind === 'prompt' ? (node.prompt.trim() ? subagentName(t) : null)
-            : subagentName(t);
+      const self = t?.kind === 'skill' ? !!node.skill : t?.kind === 'prompt' ? !!node.prompt.trim() : false;
+      const agent = !t || t.kind === 'ask' || byGovernor(t) ? null : subagentName(t);
       return {
-        id, label: stepLabel(c, node), kind: t?.kind || 'agent', agent, verdict: !!t?.verdict, count: node.count,
+        id, label: stepLabel(c, node), kind: t?.kind || 'agent', agent, self, verdict: !!t?.verdict, count: node.count,
         inputs: c.edges.filter(e => e.to === id && !isFail(e)).map(e => e.from),
       };
     };
@@ -888,8 +891,10 @@
 
   // What Agent Hub runs (pipelinerun.js): the graph of one profile, frozen
   // when a run starts. { profileId, profileName, stages: [[id]], onDemand:
-  // [id], first: [id], nodes: [{ id, label, kind, type, agent, verdict,
-  // count, rounds, inputs, outputs, back, skip, canEdit, isolate }] }.
+  // [id], first: [id], nodes: [{ id, label, kind, type, agent, self,
+  // verdict, count, rounds, inputs, outputs, back, skip, canEdit, isolate }] }.
+  // `self`: a step the governor does itself, in the folder (never isolated);
+  // `skill` the skill of a Use a skill step.
   // `inputs` holds TASK, `outputs` may hold DONE; `back` are the ✕ targets;
   // `skip` a step with nothing to run (no skill picked, no instructions, a
   // missing type); `isolate` a step that changes files while another one
@@ -906,12 +911,13 @@
       const node = c.nodes.find(n => n.id === s.id);
       const t = c.types.find(x => x.id === node.type);
       return {
-        id: s.id, label: s.label, kind: s.kind, type: node.type, agent: s.agent, verdict: s.verdict, count: node.count, rounds: node.rounds,
+        id: s.id, label: s.label, kind: s.kind, type: node.type, agent: s.agent, self: s.self, verdict: s.verdict, count: node.count, rounds: node.rounds,
+        ...(s.self && s.kind === 'skill' ? { skill: node.skill } : {}),
         inputs: s.inputs,
         outputs: c.edges.filter(e => e.from === s.id && !isFail(e)).map(e => e.to),
         back: c.edges.filter(e => e.from === s.id && isFail(e)).map(e => e.to),
-        skip: s.kind !== 'ask' && !s.agent,
-        canEdit: !!t && t.kind !== 'ask' && (t.tools === 'all' || t.tools === 'edit'),
+        skip: s.kind !== 'ask' && !s.agent && !s.self,
+        canEdit: !!t && t.kind !== 'ask' && !byGovernor(t) && (t.tools === 'all' || t.tools === 'edit'),
         isolate: false,
       };
     });
@@ -973,8 +979,9 @@
     const tools = set => (m?.toolSets?.[set] != null ? m.toolSets[set] + (set === 'all' ? mcp : 0) : FALLBACK_TOOLS[set]);
     const perType = {};
     for (const t of c.types) {
-      // Asking the user is a turn of the governor's own: no new agent.
-      if (t.kind === 'ask') { perType[t.id] = { instructions: 0, tools: 0, memory: 0, total: 0 }; continue; }
+      // Asking the user, a skill and a custom prompt are the governor's own
+      // work: no new agent.
+      if (t.kind === 'ask' || byGovernor(t)) { perType[t.id] = { instructions: 0, tools: 0, memory: 0, total: 0 }; continue; }
       // Connector tools are not measured: a rough size each (a whole
       // connector more), unless Claude Code defers them.
       const extra = t.tools === 'all' ? 0 : t.mcp.reduce((sum, e) => sum + (e.includes(':') || e.split('__').length > 2 ? FALLBACK_MCP_TOOL : FALLBACK_MCP_SERVER), 0);
@@ -1008,7 +1015,7 @@
       again += (gate.rounds - 1) * loop;
       rounds = Math.max(rounds, gate.rounds);
     }
-    const agents = c.nodes.filter(n => c.types.find(t => t.id === n.type)?.kind !== 'ask').reduce((sum, n) => sum + n.count, 0);
+    const agents = c.nodes.filter(n => { const t = c.types.find(x => x.id === n.type); return t?.kind !== 'ask' && !byGovernor(t); }).reduce((sum, n) => sum + n.count, 0);
     const asks = c.nodes.filter(n => c.types.find(t => t.id === n.type)?.kind === 'ask').length;
     const oneRound = governor + steps;
     return { measured: !!m, governor, memory, mcp, perType, steps, oneRound, worst: oneRound + again, rounds, agents, asks };
@@ -1019,5 +1026,5 @@
   const cleanMcp = list => cleanList(list, MCP_ENTRY);
   const cleanSkills = list => cleanList(list, SKILL_NAME);
 
-  return { steps, plan, parseVerdict, VERDICT_FORMAT, pick, PROFILE_ID, TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
+  return { STEP_SERVER, STEP_TOOLS, byGovernor, steps, plan, parseVerdict, VERDICT_FORMAT, pick, PROFILE_ID, TASK, DONE, TOOL_SETS, TOOL_NAMES, CONNECTORS, TEMPLATES, template, mcpTools, connectorsOf, cleanMcp, cleanSkills, MODELS, EFFORTS, BUILTIN_TYPES, estimate, formatTokens, tokensOf, defaults, normalize, validate, stages, subagents, governorPrompt, summary, slug, isFail };
 }));
