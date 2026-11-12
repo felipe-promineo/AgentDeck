@@ -1,0 +1,121 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#1f1913">
+  <title>Agent Hub</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <!-- The desktop app's look (copied from src/renderer by build.js), then the phone's layout. -->
+  <link rel="stylesheet" href="fonts/nunito-400.css">
+  <link rel="stylesheet" href="fonts/nunito-500.css">
+  <link rel="stylesheet" href="fonts/nunito-600.css">
+  <link rel="stylesheet" href="fonts/nunito-700.css">
+  <link rel="stylesheet" href="fonts/nunito-800.css">
+  <link rel="stylesheet" href="fonts/fira-code-400.css">
+  <link rel="stylesheet" href="fonts/fira-code-500.css">
+  <link rel="stylesheet" href="fonts/fira-code-600.css">
+  <link rel="stylesheet" href="lib/github-dark-dimmed.min.css">
+  <link rel="stylesheet" href="renderer/styles.css">
+  <link rel="stylesheet" href="renderer/theme-mother.css" id="theme-mother" disabled>
+  <link rel="stylesheet" href="renderer/theme-light.css" id="theme-light" disabled>
+  <link rel="stylesheet" href="mobile.css">
+</head>
+<body class="phone">
+  <!-- Pairing: scan the QR code from Settings → Phone on the computer. -->
+  <section id="pair" class="pair hidden">
+    <div class="pair-card">
+      <div class="pair-tank"></div>
+      <h1>Agent Hub</h1>
+      <p>Connect to Agent Hub on your computer: there, open <b>Settings → Phone</b>, press <b>Pair a phone…</b> and scan the code.</p>
+      <button id="pair-scan" class="primary" type="button">Scan the QR code</button>
+      <details class="pair-manual">
+        <summary>Paste the pairing link instead</summary>
+        <textarea id="pair-link" rows="3" placeholder="agenthub://pair#…" spellcheck="false"></textarea>
+        <button id="pair-go" type="button">Connect</button>
+      </details>
+      <div id="pair-error" class="pair-error"></div>
+    </div>
+  </section>
+
+  <!-- History: saved sessions, in a drawer like on the computer. -->
+  <div id="drawer-backdrop"></div>
+  <aside id="sidebar" class="history-drawer">
+    <div class="drawer-head">
+      <span class="drawer-title">History</span>
+      <span><button id="close-history" class="icon" title="Close">✕</button></span>
+    </div>
+    <input id="search" type="search" placeholder="Search sessions…">
+    <div id="history-list" class="list scroll"></div>
+    <div class="sidebar-footer">
+      <span id="phone-host" class="phone-host"></span>
+      <button id="unpair" class="link">Disconnect this phone</button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="topbar">
+      <button id="toggle-sidebar" class="icon sidebar-toggle" title="History">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="9" cy="9" r="6.5"/>
+          <polyline points="9,5.5 9,9 11.5,10.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button id="back-to-hub" class="back-btn hidden" title="Back to the Hub">← Hub</button>
+      <div class="titles">
+        <div class="title-row"><div id="view-title">Agent Hub</div></div>
+        <div class="subtitle-row"><div id="view-subtitle"></div></div>
+      </div>
+      <div class="actions">
+        <span id="link-state" class="link-state" title="Connection to your computer"></span>
+        <span id="view-status" class="status-pill hidden"></span>
+      </div>
+    </header>
+
+    <section id="views">
+      <div id="hub-view" class="view"></div>
+      <!-- One .view.chat per chat you open, like on the computer. -->
+    </section>
+
+    <footer id="composer">
+      <div id="composer-banner" class="composer-banner hidden"></div>
+      <div class="composer-box">
+        <div id="composer-attachments" class="composer-attachments hidden"></div>
+        <textarea id="input" rows="1" placeholder="Describe a task for a new agent…"></textarea>
+        <div class="composer-bar">
+          <div class="composer-pickers">
+            <select id="composer-folder" class="model-btn phone-select" title="Folder"></select>
+            <select id="composer-group" class="model-btn phone-select" title="Category"></select>
+          </div>
+          <div class="composer-right">
+            <button id="composer-attach" class="composer-attach" type="button" title="Attach a picture">＋</button>
+            <input id="attach-input" type="file" accept="image/*" multiple hidden>
+            <button id="composer-restart" class="composer-restart hidden" type="button">↻ Restart</button>
+            <button id="composer-stop" class="composer-stop hidden" type="button"><span></span>Stop</button>
+            <button id="send" class="primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <div id="phone-toast" class="phone-toast hidden"></div>
+
+  <script src="connection.js"></script>
+  <script src="deck.js"></script>
+  <script src="renderer/theme.js"></script>
+  <script src="lib/marked.umd.js"></script>
+  <script src="lib/purify.min.js"></script>
+  <script src="lib/highlight.min.js"></script>
+  <script src="renderer/diffview.js"></script>
+  <script src="renderer/umlview.js"></script>
+  <script src="renderer/boxcard.js"></script>
+  <script src="renderer/sounds.js"></script>
+  <script src="renderer/render.js"></script>
+  <script src="renderer/imagereview.js"></script>
+  <script src="renderer/hub.js"></script>
+  <script src="renderer/tasktype.js"></script>
+  <script src="renderer/mirror.js"></script>
+  <script src="phone.js"></script>
+</body>
+</html>

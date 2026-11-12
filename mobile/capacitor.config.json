@@ -1,0 +1,20 @@
+{
+  "appId": "io.agenthub.phone",
+  "appName": "Agent Hub",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#1f1913"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#e9a23b"
+    },
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
+}

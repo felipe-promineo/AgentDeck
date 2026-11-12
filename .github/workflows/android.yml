@@ -1,0 +1,49 @@
+# Builds the phone app (mobile/) as an Android APK. Download it from the
+# run's artifacts ("agent-hub-android") and install it on your phone.
+#
+# Push notifications while the app is closed: add the Firebase project's
+# google-services.json as the repository secret GOOGLE_SERVICES_JSON (its
+# full text); without it the app is built without them.
+name: Android app
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'mobile/**'
+      - 'src/renderer/**'
+      - '.github/workflows/android.yml'
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - name: Packages
+        run: |
+          ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+          cd mobile && npm ci
+      - name: Firebase (optional)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then printf '%s' "$GOOGLE_SERVICES_JSON" > mobile/android/app/google-services.json; fi
+      - name: Build
+        run: |
+          cd mobile
+          node build.js
+          npx cap sync android
+          cd android
+          ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-hub-android
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk

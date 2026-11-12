@@ -32,6 +32,10 @@ Both run the code in that folder directly, so after an update you only quit and 
 - **Shortcuts:** use Ctrl where this README says ⌘.
 - **Finding Claude Code:** Agent Hub looks for `claude` in the native installer's folder (`%USERPROFILE%\.local\bin`), the npm folder (`%APPDATA%\npm`), wherever `where claude` finds it, and the Claude desktop app's own copy, and uses the newest. If it picks the wrong one, set `claudePath` in Settings.
 
+## On your phone
+
+The Agent Hub Android app shows your Hub, agents and History on your phone, and starts and talks to agents on this computer, through a small relay server you run. See [mobile/README.md](mobile/README.md) for the app and [relay/README.md](relay/README.md) for the relay; pair a phone in Settings → Phone.
+
 ## Two copies: stable and dev
 
 The app you use every day and the code you change live in two separate folders, so a broken change never breaks the app you are working in. Both folders share one git history (they are git worktrees).

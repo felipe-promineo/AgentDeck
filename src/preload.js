@@ -173,4 +173,16 @@ contextBridge.exposeInMainWorld('deck', {
   onConfirmQuit: fn => on('app:confirmQuit', fn),
   quit: () => ipcRenderer.invoke('app:quit'),
   onNotificationOpen: fn => on('notification:open', fn),
+  // The phone app (remote/host.js, renderer/remote.js).
+  remoteStatus: () => ipcRenderer.invoke('remote:status'),
+  remoteConfigure: values => ipcRenderer.invoke('remote:configure', values),
+  remotePair: () => ipcRenderer.invoke('remote:pair'),
+  remoteRemoveDevice: id => ipcRenderer.invoke('remote:removeDevice', id),
+  remoteClients: () => ipcRenderer.invoke('remote:clients'),
+  // To one phone (its client id), or to all of them (null).
+  remoteSend: (clientId, msg) => ipcRenderer.send('remote:send', clientId, msg),
+  remotePush: (title, body, tag) => ipcRenderer.send('remote:push', title, body, tag),
+  onRemoteMessage: fn => on('remote:message', fn),
+  onRemoteClients: fn => on('remote:clients', fn),
+  onRemoteStatus: fn => on('remote:status', fn),
 });

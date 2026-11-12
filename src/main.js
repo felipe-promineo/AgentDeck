@@ -25,6 +25,7 @@ const csharp = require('./csharp');
 const gameFolders = require('./gamefolders');
 const toast = require('./toast');
 const { ReviewPeer } = require('./reviewpeer');
+const { RemoteHost } = require('./remote/host');
 
 // The window loads images and videos from disk through media:// (see media.js).
 // "stream" lets video players read a file piece by piece.
@@ -639,6 +640,30 @@ app.whenReady().then(() => {
     });
     n.show();
   });
+
+  // The phone app (Settings → Phone): the relay connection and paired
+  // phones (remote/host.js). The window answers the phone (renderer/remote.js).
+  const remote = new RemoteHost({
+    file: path.join(app.getPath('userData'), 'remote.json'),
+    send,
+    // A picture or video the chat shows (a media:// address), for the phone.
+    fetchMedia: async (url, max) => {
+      if (!/^media:\/\//i.test(url)) throw new Error('Not a media address');
+      const res = await net.fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = Buffer.from(await res.arrayBuffer());
+      if (body.length > max) throw new Error('Too big to send to the phone');
+      return { type: res.headers.get('content-type') || 'application/octet-stream', data: body.toString('base64') };
+    },
+  });
+  ipcMain.handle('remote:status', () => remote.status());
+  ipcMain.handle('remote:configure', (_e, values) => remote.configure(values));
+  ipcMain.handle('remote:pair', () => remote.pair());
+  ipcMain.handle('remote:removeDevice', (_e, id) => remote.removeDevice(id));
+  ipcMain.handle('remote:clients', () => remote.clientList());
+  ipcMain.on('remote:send', (_e, clientId, msg) => remote.sendTo(clientId || null, msg));
+  ipcMain.on('remote:push', (_e, title, body, tag) => remote.push(title, body, tag));
+  remote.start();
 
   registerForNotifications();
   createWindow();

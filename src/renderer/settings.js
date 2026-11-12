@@ -375,6 +375,10 @@ function openSettings(config, { onSaved } = {}) {
       settingsField('Projects', `The Branches view lists ${(config.svnServer || 'svn+ssh://svn@tactile.build').replace(/\/+$/, '')}/<project>/branches for each one. Separate them with commas. Empty: every project someone committed to in the last year`, svnProjects),
       settingsField('Branch names', 'Only branches whose names start with one of these. Separate them with commas. Empty: every branch', svnBranchFilter),
       settingsField('GitHub', 'Also list your open pull requests and the branches you pushed in the last 90 days, for the account gh is signed in with', githubBranches))]],
+    // Not in a settingsField either (see Account).
+    ['phone', 'Phone', [section(null,
+      el('div', 'settings-hint account-intro', 'The Agent Hub phone app shows your Hub, agents and History, and starts and talks to agents here. This app has to be open for it.'),
+      phonePanel())]],
     ['advanced', 'Advanced', [
       section('Claude Code',
         claudeOnly(settingsField('Claude Code program', 'Empty: the app finds it', claudePath)),

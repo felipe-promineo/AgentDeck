@@ -1,0 +1,14 @@
+{
+  "name": "agenthub-relay",
+  "version": "0.1.0",
+  "description": "Relay between Agent Hub on your computer and the Agent Hub phone app. It forwards end-to-end encrypted messages and cannot read them.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -5147,39 +5147,7 @@ async function sendFromComposer() {
     saveGroups();
     // The next new agent starts with the same folder and group, and the default model.
     state.draft = null;
-    // Auto game folder: a message about one game works in that game's folder
-    // (gamefolders.js). The instant check runs here; when only Haiku can
-    // tell, it asks while the tile boots up (in prepare).
-    const autoGame = state.config.autoGameFolder && state.config.gamesFolder
-      ? await window.deck.gameFolderQuick(text, d.folder).catch(() => null) : null;
-    const gameFolder = found => found?.folder && !found.same ? found : null;
-    const gameNote = found => `Works in ${homePath(found.folder)}: your message is about ${found.product || found.game}. (Auto game folder; you picked ${homePath(d.folder)}.)`;
-    const quickGame = gameFolder(autoGame);
-    const cwd = quickGame ? quickGame.folder : d.folder;
-    const provider = providerOf(startChoice(d.choice));
-    const forkFrom = forkSourceFor(cwd, d.groupId, provider);
-    // A message that is (or starts with) a Jira ticket brings the ticket along.
-    const ticket = ticketIn(text);
-    // Reading the ticket and writing a handoff (a long parent is not copied,
-    // see startFrom) take a few seconds. They run while the new tile boots
-    // up in its group, so pressing Enter shows the agent at once.
-    const prepare = async note => {
-      let prompt = text;
-      if (ticket) {
-        note(`Reading ${ticket}…`);
-        const details = await window.deck.jiraDetails(ticket).catch(err => ({ error: String(err?.message || err) }));
-        if (details.error) flashComposerNote(`Could not read ${ticket} (${details.error}). The agent gets your message as it is.`);
-        else prompt = ticketPrompt(details, text);
-      }
-      if (autoGame?.lookup) {
-        note('Finding the game…');
-        const found = gameFolder(await window.deck.gameFolderLookup(prompt, d.folder).catch(() => null));
-        if (found) return { prompt, cwd: found.folder, folderNote: gameNote(found), ...(await startFrom(forkSourceFor(found.folder, d.groupId, provider), note)) };
-      }
-      return { prompt, ...(await startFrom(forkFrom, note)) };
-    };
-    if (playSounds()) sounds.created();
-    await startAgent({ cwd, prompt: text, permissionMode: d.mode, choice: d.choice, groupId: d.groupId, fromRect, images, ticket, prepare, folderNote: quickGame ? gameNote(quickGame) : null });
+    await startInFolder({ text, images, folder: d.folder, groupId: d.groupId, choice: d.choice, mode: d.mode, fromRect });
   } else if (state.current.kind === 'agent') {
     const a = state.agents.get(state.current.id);
     if (QUEUE_WHILE.includes(a.status)) {
@@ -5210,6 +5178,46 @@ async function sendFromComposer() {
     if (playSounds()) sounds.created();
     await startAgent({ cwd, prompt: text, permissionMode: h.mode, choice: h.choice, resume: h, images });
   }
+}
+
+// A new agent for a message, in a folder and Category: what Enter in the
+// Hub's message box does (sendFromComposer), and what the phone app asks for
+// (remote.js). fromRect: where the message box was, for the tile's arrival;
+// without it the Hub stays as it is.
+async function startInFolder({ text, images = [], folder, groupId = null, choice, mode, fromRect = null }) {
+  // Auto game folder: a message about one game works in that game's folder
+  // (gamefolders.js). The instant check runs here; when only Haiku can
+  // tell, it asks while the tile boots up (in prepare).
+  const autoGame = state.config.autoGameFolder && state.config.gamesFolder
+    ? await window.deck.gameFolderQuick(text, folder).catch(() => null) : null;
+  const gameFolder = found => found?.folder && !found.same ? found : null;
+  const gameNote = found => `Works in ${homePath(found.folder)}: your message is about ${found.product || found.game}. (Auto game folder; you picked ${homePath(folder)}.)`;
+  const quickGame = gameFolder(autoGame);
+  const cwd = quickGame ? quickGame.folder : folder;
+  const provider = providerOf(startChoice(choice));
+  const forkFrom = forkSourceFor(cwd, groupId, provider);
+  // A message that is (or starts with) a Jira ticket brings the ticket along.
+  const ticket = ticketIn(text);
+  // Reading the ticket and writing a handoff (a long parent is not copied,
+  // see startFrom) take a few seconds. They run while the new tile boots
+  // up in its group, so pressing Enter shows the agent at once.
+  const prepare = async note => {
+    let prompt = text;
+    if (ticket) {
+      note(`Reading ${ticket}…`);
+      const details = await window.deck.jiraDetails(ticket).catch(err => ({ error: String(err?.message || err) }));
+      if (details.error) flashComposerNote(`Could not read ${ticket} (${details.error}). The agent gets your message as it is.`);
+      else prompt = ticketPrompt(details, text);
+    }
+    if (autoGame?.lookup) {
+      note('Finding the game…');
+      const found = gameFolder(await window.deck.gameFolderLookup(prompt, folder).catch(() => null));
+      if (found) return { prompt, cwd: found.folder, folderNote: gameNote(found), ...(await startFrom(forkSourceFor(found.folder, groupId, provider), note)) };
+    }
+    return { prompt, ...(await startFrom(forkFrom, note)) };
+  };
+  if (playSounds()) sounds.created();
+  await startAgent({ cwd, prompt: text, permissionMode: mode, choice: choice, groupId: groupId, fromRect, images, ticket, prepare, folderNote: quickGame ? gameNote(quickGame) : null });
 }
 
 // Sounds when you start an agent and when one finishes (see sounds.js).
